@@ -179,11 +179,23 @@ a genuine check rather than an algebraic identity.
 compute `perCavity`. `residual = injected − lost` keeps its meaning and its alarm, which
 `main` has since tightened to 0.1 % of throughput (`ENERGY_RESIDUAL_FRACTION = 1e-3`).
 
+The `toCavity` shares are needed for a second reason, found in implementation and not
+anticipated above: a **pinned** wall shedding into a pocket is injecting power into the
+model, and `injectedAtFixed` has to count it or the residual cannot close.
+
 ## 6. Invariants
 
 1. **A sealed cavity conserves energy.** For every live cavity, the net flow across its
    walls is zero within solver tolerance. Imposed by the matrix row; verified independently
    in the balance.
+
+   One caveat, found in implementation. Convection assembles per triangle while `netFlow`
+   sums per node, so for a node whose cavity-facing triangles span two live cavities the
+   two attribute that node's heat to different pockets. The sum over all cavities still
+   cancels, so no energy is created or lost; only the per-pocket split is approximate. The
+   TBTE assembly contains no such node. If one ever matters, the fix is to assemble
+   convection through the same per-node split radiation already uses.
+
 2. **Ambient is the only exit.** Total loss equals the loss through open-air triangles.
    After this change those are the same surfaces, so the two figures must agree.
 3. **No exchanging area is created or destroyed.** For every node and for both
@@ -207,17 +219,33 @@ compute `perCavity`. `residual = injected − lost` keeps its meaning and its al
 
 ### Integration — TBTE
 
-The falsifiable prediction. Today total loss is 101.52 W while loss through the open-air
-skin is 64.77 W. After this change the outer skin is the only way out, so:
+The falsifiable prediction. Before the change, total loss was 101.52 W while loss through
+the open-air skin was 64.77 W. After it the outer skin is the only way out, so:
 
 - total loss must equal open-air loss to within the balance residual
-- total loss must land near the 78.89 W the adiabatic run gives, and below the 101.52 W
-  the current sink produces
+- total loss must fall well below the 101.52 W the sink produced
 - the open-air area assertion (3136 cm² against the reference mesh's 3194 cm²) is
   unaffected, because detection does not change
 
 If total and open-air loss do not converge, the change is wrong. That assertion is the
 point of the test.
+
+**Measured: 82.49 W, total and open-air identical**, worst per-cavity net flow 4.7e-5 W,
+residual 2.2e-6 of the loss, and the seven "exchange no heat with anything" warnings gone.
+
+That is above the 78.89 W an adiabatic run gives, which was the figure this section first
+predicted. Adiabatic was the wrong anchor: it seals the pocket off entirely, whereas a
+cavity air node lets the pocket _transport_ the buried block's heat to the skin. More heat
+reaching the skin than in the adiabatic case is the expected direction, not an overshoot.
+
+It also widens the gap to the reference run's 61 W, measured over the same surface, and
+that deserves stating plainly rather than burying. The skin's conductance still agrees:
+2.46 W/K here against the reference's 2.66 W/K. What differs is that our structure runs
+33.5 K above ambient where the reference runs 22.9 K, because we now carry heat across the
+pocket by convection and radiation and a mesh with no interior faces cannot. The reference
+therefore no longer bounds the total from above, and the integration test says so in place
+of its old `< 72 W`. Losing that bound is a real cost of this change; the per-cavity
+conservation check is what replaces it as the thing holding the model honest.
 
 ### Unchanged
 
