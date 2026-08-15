@@ -1,0 +1,373 @@
+/*
+ * Plot chrome. Scoped to `hds-plot*` so it cannot collide with the app shell's
+ * panel styles; colours mirror `ui/styles.css` and the prototype.
+ */
+
+.hds-plot {
+  --hds-plot-fg: #e8eaf0;
+  --hds-plot-muted: #8f92a0;
+  --hds-plot-label: #c9ccd8;
+  --hds-plot-border: #2c2c36;
+  --hds-plot-surface: rgba(255, 255, 255, 0.015);
+
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  min-height: 160px;
+  min-width: 0;
+  color: var(--hds-plot-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.hds-plot__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.hds-plot__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+}
+
+.hds-plot__note {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--hds-plot-muted);
+}
+
+.hds-plot__note strong {
+  color: var(--hds-plot-fg);
+  font-weight: 600;
+}
+
+/* Visually hidden, still read aloud: the text alternative for the graphic. */
+.hds-plot__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.hds-plot__body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  background: var(--hds-plot-surface);
+  border-radius: 3px;
+}
+
+.hds-plot__canvas,
+.hds-plot__svg {
+  position: absolute;
+  inset: 0;
+}
+
+.hds-plot__svg {
+  pointer-events: none;
+  overflow: visible;
+}
+
+.hds-plot__empty {
+  position: absolute;
+  inset: 8px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--hds-plot-muted);
+  border: 1px dashed var(--hds-plot-border);
+  border-radius: 4px;
+}
+
+.hds-plot__tick {
+  font-size: 10px;
+  fill: var(--hds-plot-muted);
+}
+
+.hds-plot__axis-label {
+  font-size: 10.5px;
+  fill: var(--hds-plot-label);
+}
+
+.hds-plot__marker-label {
+  font-size: 10px;
+  fill: #f0554a;
+}
+
+.hds-plot__callout {
+  font-size: 10.5px;
+  fill: #38bdf8;
+}
+
+/* Drawn under the callout text so it stays legible over the dense scatter. */
+.hds-plot__callout--halo {
+  fill: none;
+  stroke: #0c0c10;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  opacity: 0.85;
+}
+
+.hds-plot__span-label {
+  font-size: 10.5px;
+  fill: #38bdf8;
+}
+
+/* Legend box, top-right inside the plot body — matches the reference figure. */
+.hds-plot__legend {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  max-width: 72%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  background: rgba(20, 20, 26, 0.82);
+  border: 1px solid var(--hds-plot-border);
+  border-radius: 3px;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+.hds-plot__legend--bottom-left {
+  top: auto;
+  right: auto;
+  bottom: 8px;
+  left: 8px;
+}
+
+.hds-plot__legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--hds-plot-label);
+}
+
+.hds-plot__swatch {
+  flex: none;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.hds-plot__swatch--dashed {
+  background-image: linear-gradient(90deg, currentColor 60%, transparent 60%);
+  background-size: 5px 2px;
+}
+
+.hds-plot__legend-note {
+  color: var(--hds-plot-muted);
+}
+
+/* Vertical colour ramp for the section field. */
+.hds-plot__ramp {
+  position: absolute;
+  top: 10px;
+  right: 8px;
+  bottom: 10px;
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.hds-plot__ramp-bar {
+  width: 9px;
+  border: 1px solid var(--hds-plot-border);
+  border-radius: 2px;
+}
+
+.hds-plot__ramp-scale {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 9.5px;
+  color: var(--hds-plot-muted);
+  text-shadow: 0 0 4px #0c0c10;
+}
+
+/* --- Heat balance readout ------------------------------------------------- */
+
+.hds-balance {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  color: #e8eaf0;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hds-balance__empty {
+  margin: 0;
+  padding: 14px;
+  text-align: center;
+  font-size: 11.5px;
+  color: #8f92a0;
+  border: 1px dashed #2c2c36;
+  border-radius: 4px;
+}
+
+.hds-balance__headline {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.hds-balance__total {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.hds-balance__caption {
+  font-size: 11px;
+  color: #8f92a0;
+}
+
+.hds-balance__section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hds-balance__heading {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #8f92a0;
+}
+
+.hds-balance__bar {
+  display: flex;
+  width: 100%;
+  height: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 2px;
+}
+
+.hds-balance__bar-segment {
+  height: 100%;
+}
+
+.hds-balance__bar--thin {
+  height: 6px;
+}
+
+.hds-balance__keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 10.5px;
+  color: #c9ccd8;
+}
+
+.hds-balance__key {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.hds-balance__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.hds-balance__table {
+  display: grid;
+  gap: 3px 10px;
+  align-items: center;
+}
+
+.hds-balance__table--parts {
+  grid-template-columns: minmax(0, 1fr) minmax(56px, 88px) auto;
+}
+
+.hds-balance__table--contacts {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.hds-balance__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c9ccd8;
+}
+
+.hds-balance__value {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.hds-balance__value--muted {
+  color: #8f92a0;
+}
+
+/* The residual is the trust signal: quiet when small, unmissable when not. */
+.hds-balance__residual {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  padding: 6px 9px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.hds-balance__residual--ok {
+  color: #8f92a0;
+  border-color: #2c2c36;
+}
+
+.hds-balance__residual--warn {
+  color: #facc15;
+  border-color: rgba(250, 204, 21, 0.45);
+  background: rgba(250, 204, 21, 0.08);
+}
+
+.hds-balance__residual--bad {
+  color: #f0554a;
+  border-color: rgba(240, 85, 74, 0.7);
+  background: rgba(240, 85, 74, 0.12);
+  font-weight: 600;
+}
+
+.hds-balance__residual-value {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hds-balance__residual-note {
+  flex-basis: 100%;
+  font-size: 10.5px;
+  font-weight: 400;
+  opacity: 0.9;
+}
+
+.hds-balance__more {
+  font-size: 10.5px;
+  color: #8f92a0;
+}
