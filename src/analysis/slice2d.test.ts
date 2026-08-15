@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { boxMesh, modelFromMesh } from '../core/testModels';
-import { CELL_AMBIENT, CELL_CAVITY, CELL_OUTSIDE, CELL_SHELL, type Vec3 } from '../core/types';
+import {
+  CELL_AMBIENT,
+  CELL_CAVITY,
+  CELL_OUTSIDE,
+  CELL_SHELL,
+  type SectionPolyline,
+  type Vec3,
+} from '../core/types';
 import { planeBasis, sectionModel } from '../geometry/section';
-import { solveSliceField, type SlicePolyline } from './slice2d';
+import { solveSliceField } from './slice2d';
 
 const AMBIENT = 293.15;
 const XY_BASIS = planeBasis({ normal: [0, 0, 1], origin: [0, 0, 0] });
@@ -10,27 +17,34 @@ const EXTENT = { uMin: 0, uMax: 1, vMin: 0, vMax: 1 };
 const WALL_MIN = 0.2;
 const WALL_MAX = 0.8;
 
-/** A square wall in z = 0, sampled densely enough that no grid cell is stepped over. */
-function squareWall(temperatureAt: (u: number, v: number) => number, cavityId = 1): SlicePolyline {
+/**
+ * A square wall in z = 0, sampled densely enough that no grid cell is stepped over.
+ * `edges` under four leaves the ring open, which is what a chain that failed to
+ * close looks like.
+ */
+function squareWall(
+  temperatureAt: (u: number, v: number) => number,
+  { min = WALL_MIN, max = WALL_MAX, edges = 4 } = {},
+): SectionPolyline {
   const corners: Array<[number, number]> = [
-    [WALL_MIN, WALL_MIN],
-    [WALL_MAX, WALL_MIN],
-    [WALL_MAX, WALL_MAX],
-    [WALL_MIN, WALL_MAX],
-    [WALL_MIN, WALL_MIN],
+    [min, min],
+    [max, min],
+    [max, max],
+    [min, max],
+    [min, min],
   ];
   const perEdge = 40;
   const u: number[] = [];
   const v: number[] = [];
-  for (let edge = 0; edge + 1 < corners.length; edge++) {
+  for (let edge = 0; edge < edges; edge++) {
     for (let s = 0; s < perEdge; s++) {
       const f = s / perEdge;
       u.push(corners[edge][0] + f * (corners[edge + 1][0] - corners[edge][0]));
       v.push(corners[edge][1] + f * (corners[edge + 1][1] - corners[edge][1]));
     }
   }
-  u.push(corners[0][0]);
-  v.push(corners[0][1]);
+  u.push(corners[edges][0]);
+  v.push(corners[edges][1]);
 
   const count = u.length;
   const points = new Float32Array(count * 3);
@@ -42,7 +56,7 @@ function squareWall(temperatureAt: (u: number, v: number) => number, cavityId = 
     temperature[k] = temperatureAt(u[k], v[k]);
     if (k > 0) arcLength[k] = arcLength[k - 1] + Math.hypot(u[k] - u[k - 1], v[k] - v[k - 1]);
   }
-  return { partId: 'part-0', points, temperature, arcLength, closed: true, cavityId };
+  return { partId: 'part-0', points, temperature, arcLength, closed: edges === 4 };
 }
 
 function cellCentre(index: number, count: number, min: number, max: number): number {
@@ -161,9 +175,10 @@ describe('solveSliceField', () => {
     expect(field.contours.every((contour) => Number.isFinite(contour.level))).toBe(true);
   });
 
-  it('treats an open polyline as a wall without an interior', () => {
-    const wall = squareWall(() => 400);
-    const open: SlicePolyline = { ...wall, closed: false, cavityId: 0 };
+  it('treats a wall that is open on two sides as open air, not an interior', () => {
+    // Two sides of the square: every cell can still see out two ways.
+    const open = squareWall(() => 400, { edges: 2 });
+    expect(open.closed).toBe(false);
     const field = solveSliceField([open], XY_BASIS, {
       extent: EXTENT,
       ambient: AMBIENT,
@@ -175,6 +190,89 @@ describe('solveSliceField', () => {
       expect(field.mask[cell] === CELL_AMBIENT || field.mask[cell] === CELL_SHELL).toBe(true);
       expect(Number.isFinite(field.values[cell])).toBe(true);
     }
+  });
+
+  it('fills a pocket walled in on three sides, which the border can still reach', () => {
+    // The case the real assembly turns on: a housing whose tray is open at the top
+    // cuts as three walls and a doorway, and the trapped air the 3D solve is
+    // treating as a cavity would otherwise flood with ambient. Here the doorway is
+    // the missing fourth side, at u = WALL_MIN.
+    const field = solveSliceField([squareWall(() => 400, { edges: 3 })], XY_BASIS, {
+      extent: EXTENT,
+      ambient: AMBIENT,
+      fillK: 0.026,
+      width: 64,
+      height: 64,
+    });
+    const cellAt = (u: number, v: number) =>
+      Math.floor(v * field.height) * field.width + Math.floor(u * field.width);
+
+    let inside = 0;
+    for (let j = 0; j < field.height; j++) {
+      for (let i = 0; i < field.width; i++) {
+        const u = cellCentre(i, field.width, 0, 1);
+        const v = cellCentre(j, field.height, 0, 1);
+        if (u < WALL_MIN + 0.02 || u > WALL_MAX - 0.02) continue;
+        if (v < WALL_MIN + 0.02 || v > WALL_MAX - 0.02) continue;
+        expect(field.mask[j * field.width + i]).toBe(CELL_CAVITY);
+        expect(field.values[j * field.width + i]).toBeGreaterThan(AMBIENT);
+        expect(field.values[j * field.width + i]).toBeLessThanOrEqual(400.01);
+        inside++;
+      }
+    }
+    expect(inside).toBeGreaterThan(900);
+
+    // The doorway is a real one: at the back of the pocket the walls win, at its
+    // mouth the ambient outside pulls the field down.
+    expect(field.values[cellAt(0.72, 0.5)]).toBeGreaterThan(395);
+    expect(field.values[cellAt(0.28, 0.5)]).toBeLessThan(field.values[cellAt(0.72, 0.5)]);
+
+    // Beside the pocket, where two ways out remain, nothing is claimed.
+    expect(field.mask[cellAt(0.05, 0.5)]).toBe(CELL_AMBIENT);
+    expect(field.mask[cellAt(0.5, 0.95)]).toBe(CELL_AMBIENT);
+  });
+
+  it('fills the room inside a wall of finite thickness, not only the wall itself', () => {
+    // What a sheet-metal solid actually cuts as: an outer ring and an inner ring a
+    // wall thickness apart. Even-odd parity across the pair fills the wall and
+    // leaves the room — the region the plot exists to show — empty.
+    const wallThickness = 0.06;
+    const field = solveSliceField(
+      [
+        squareWall(() => 400),
+        squareWall(() => 400, { min: WALL_MIN + wallThickness, max: WALL_MAX - wallThickness }),
+      ],
+      XY_BASIS,
+      { extent: EXTENT, ambient: AMBIENT, fillK: 0.026, width: 64, height: 64 },
+    );
+
+    const cellAt = (u: number, v: number) =>
+      Math.floor(v * field.height) * field.width + Math.floor(u * field.width);
+    const room = cellAt(0.5, 0.5);
+    expect(field.mask[room]).toBe(CELL_CAVITY);
+    expect(field.values[room]).toBeCloseTo(400, 2);
+    // Inside the wall itself is enclosed too, and outside both rings is open air.
+    expect(field.mask[cellAt(0.5, WALL_MIN + wallThickness / 2)]).toBe(CELL_CAVITY);
+    expect(field.mask[cellAt(0.5, 0.05)]).toBe(CELL_AMBIENT);
+
+    let roomCells = 0;
+    for (let j = 0; j < field.height; j++) {
+      for (let i = 0; i < field.width; i++) {
+        const u = cellCentre(i, field.width, 0, 1);
+        const v = cellCentre(j, field.height, 0, 1);
+        const inside =
+          u > WALL_MIN + wallThickness &&
+          u < WALL_MAX - wallThickness &&
+          v > WALL_MIN + wallThickness &&
+          v < WALL_MAX - wallThickness;
+        if (!inside) continue;
+        expect(field.mask[j * field.width + i]).toBe(CELL_CAVITY);
+        expect(field.values[j * field.width + i]).toBeCloseTo(400, 2);
+        roomCells++;
+      }
+    }
+    // The room is ~0.48² of a 64² grid.
+    expect(roomCells).toBeGreaterThan(800);
   });
 
   it('fills the inside of a sectioned box between its wall temperatures', () => {

@@ -12,12 +12,10 @@
  *
  * - `CELL_SHELL` — a section segment passes through the cell. The cell holds the
  *   segment's interpolated wall temperature and is a Dirichlet condition.
- * - `CELL_CAVITY` — the cell is enclosed by the section: inside an odd number of
- *   closed polylines, or inside an odd number of the polylines that wall off a
- *   cavity. The second test is what rescues a thick-walled housing, whose outer and
- *   inner walls both cut the plane and whose trapped air is therefore inside two
- *   loops. These cells are the unknowns of the solve.
- * - `CELL_AMBIENT` — outside the section entirely: open air, pinned to ambient.
+ * - `CELL_CAVITY` — the cell is enclosed: the grid border cannot reach it without
+ *   crossing a shell cell, or the section walls it in on three of its four sides.
+ *   See `classifyEnclosedCells`. These cells are the unknowns of the solve.
+ * - `CELL_AMBIENT` — open air: pinned to ambient.
  * - `CELL_OUTSIDE` — no temperature at all, written as NaN so the renderer skips it:
  *   an enclosed region with an adiabatic fill, or one the boundary data never
  *   reaches. Shell cells cut from a section with no temperature field are NaN too,
@@ -39,6 +37,11 @@ export const DEFAULT_SLICE_RESOLUTION = 256;
 export const DEFAULT_CONTOUR_COUNT = 6;
 /** All four flux bits set. */
 const ALL_NEIGHBOURS = 15;
+/**
+ * Sides a cell must still see the grid border through to count as open air. Two,
+ * so that a cell walled in on three sides is a pocket — see `classifyEnclosedCells`.
+ */
+const MIN_OPEN_SIDES = 2;
 /** Gauss–Seidel stops when no cell moves more than this in a sweep, kelvin. */
 export const DEFAULT_SLICE_TOLERANCE = 1e-4;
 export const DEFAULT_SLICE_MAX_ITERATIONS = 1000;
@@ -49,9 +52,6 @@ export interface PlaneExtent {
   vMin: number;
   vMax: number;
 }
-
-/** `geometry/section` supplies `cavityId`; a bare `SectionPolyline` reads as open air. */
-export type SlicePolyline = SectionPolyline & { cavityId?: number };
 
 export interface Slice2DOptions {
   /** Plane-space region to rasterise, metres. */
@@ -78,12 +78,10 @@ interface PlaneLoop {
   u: Float64Array;
   v: Float64Array;
   temperature: Float64Array;
-  closed: boolean;
-  cavity: boolean;
 }
 
 export function solveSliceField(
-  polylines: readonly SlicePolyline[],
+  polylines: readonly SectionPolyline[],
   basis: PlaneBasis,
   options: Slice2DOptions,
 ): SectionField2D {
@@ -102,13 +100,9 @@ export function solveSliceField(
   const grid: GridGeometry = { width, height, uMin, vMin, du, dv };
   const loops = projectPolylines(polylines, basis);
 
-  classifyEnclosedCells(loops, mask, grid);
-  for (let c = 0; c < cellCount; c++) {
-    if (mask[c] === CELL_CAVITY) continue;
-    mask[c] = CELL_AMBIENT;
-    values[c] = options.ambient;
-  }
+  // The shell is the barrier the classification flows around, so it goes down first.
   rasteriseShell(loops, mask, values, grid);
+  classifyEnclosedCells(mask, values, grid, options.ambient);
 
   const unknowns = collectSolvableCells(mask, values, width, height, options.fillK);
   const stencil = buildStencil(unknowns, mask, values, grid, options.ambient);
@@ -126,7 +120,7 @@ export function solveSliceField(
   };
 }
 
-function projectPolylines(polylines: readonly SlicePolyline[], basis: PlaneBasis): PlaneLoop[] {
+function projectPolylines(polylines: readonly SectionPolyline[], basis: PlaneBasis): PlaneLoop[] {
   const loops: PlaneLoop[] = [];
   for (const polyline of polylines) {
     const count = polyline.points.length / 3;
@@ -141,7 +135,7 @@ function projectPolylines(polylines: readonly SlicePolyline[], basis: PlaneBasis
       temperature[k] = polyline.temperature[k];
     }
     // Section polylines already repeat their first point; close anything that does
-    // not, or a scanline through the gap would see an odd number of crossings.
+    // not, or the gap would be a doorway the ambient flood fill walks through.
     const gap = polyline.closed && (u[count - 1] !== u[0] || v[count - 1] !== v[0]);
     const total = gap ? count + 1 : count;
     if (gap) {
@@ -153,8 +147,6 @@ function projectPolylines(polylines: readonly SlicePolyline[], basis: PlaneBasis
       u: u.subarray(0, total),
       v: v.subarray(0, total),
       temperature: temperature.subarray(0, total),
-      closed: polyline.closed,
-      cavity: (polyline.cavityId ?? 0) !== 0,
     });
   }
   return loops;
@@ -169,41 +161,126 @@ interface GridGeometry {
   dv: number;
 }
 
-/** Even-odd scanline through the cell centres of each row. */
-function classifyEnclosedCells(loops: PlaneLoop[], mask: Uint8Array, grid: GridGeometry): void {
-  const { width, height, uMin, vMin, du, dv } = grid;
-  const closedLoops = loops.filter((loop) => loop.closed);
-  if (closedLoops.length === 0) return;
+/**
+ * Splits the grid into open air and enclosed regions.
+ *
+ * Not a point-in-polygon test, because the rings a section produces are the wrong
+ * shape for one: a sheet-metal solid cuts as thin closed rings — the outline of a
+ * 1 mm wall, not of the room — so an even-odd test across them fills the inside of
+ * the wall and leaves the volume between the walls, the region the user came to
+ * see, empty. `geometry/cavity` threw ray parity out in 3D for exactly that reason;
+ * this is the same argument one dimension down.
+ *
+ * Two rules, both about reach rather than containment:
+ *
+ * 1. Anything the grid border cannot reach without crossing the shell is enclosed.
+ *    This is indifferent to how the rings nest and still holds a room whose chain
+ *    never closed, which parity cannot do. `sectionExtent` pads the grid past the
+ *    model, so the border ring itself is always open air. The flood is 4-connected
+ *    and the shell it flows around is 8-connected, since `rasteriseShell` walls each
+ *    segment at a fraction of a cell, so it cannot squeeze through a diagonal join.
+ * 2. A cell the section walls in on three of its four sides is enclosed too, even
+ *    though the border can reach it. This is the 2D form of `geometry/cavity`'s "can
+ *    this surface see the sky?" vote, and it is what a real housing needs: a plane
+ *    through the TBTE assembly crosses the open top of its tray, so the trapped air
+ *    the 3D solve is treating as a cavity has a 145 mm doorway in this view and rule
+ *    1 alone would flood the whole room with ambient. A cell that can still see out
+ *    two ways — beside a wall, in the notch of an L, in a channel open at both ends
+ *    — stays open air.
+ */
+function classifyEnclosedCells(
+  mask: Uint8Array,
+  values: Float32Array,
+  grid: GridGeometry,
+  ambient: number,
+): void {
+  const { width, height } = grid;
+  const cellCount = width * height;
+  const openAir = floodFromBorder(mask, width, height);
+  const openSides = countOpenSides(mask, width, height);
 
-  const acrossAll: number[] = [];
-  const acrossCavities: number[] = [];
-  const markSpans = (crossings: number[], row: number) => {
-    if (crossings.length < 2) return;
-    crossings.sort((a, b) => a - b);
-    for (let c = 0; c + 1 < crossings.length; c += 2) {
-      const from = Math.max(0, Math.ceil((crossings[c] - uMin) / du - 0.5));
-      const to = Math.min(width - 1, Math.floor((crossings[c + 1] - uMin) / du - 0.5));
-      for (let i = from; i <= to; i++) mask[row * width + i] = CELL_CAVITY;
+  for (let cell = 0; cell < cellCount; cell++) {
+    if (mask[cell] === CELL_SHELL) continue;
+    if (openAir[cell] && openSides[cell] >= MIN_OPEN_SIDES) {
+      mask[cell] = CELL_AMBIENT;
+      values[cell] = ambient;
+    } else {
+      mask[cell] = CELL_CAVITY;
+      values[cell] = NaN;
     }
+  }
+}
+
+/** Cells the border reaches without crossing the shell. */
+function floodFromBorder(mask: Uint8Array, width: number, height: number): Uint8Array {
+  const cellCount = width * height;
+  const openAir = new Uint8Array(cellCount);
+  const queue = new Uint32Array(cellCount);
+  let head = 0;
+  let tail = 0;
+  const spread = (cell: number) => {
+    if (openAir[cell] || mask[cell] === CELL_SHELL) return;
+    openAir[cell] = 1;
+    queue[tail++] = cell;
   };
 
-  for (let j = 0; j < height; j++) {
-    const v = vMin + (j + 0.5) * dv;
-    acrossAll.length = 0;
-    acrossCavities.length = 0;
-    for (const loop of closedLoops) {
-      for (let k = 0; k + 1 < loop.u.length; k++) {
-        const va = loop.v[k];
-        const vb = loop.v[k + 1];
-        if (va <= v === vb <= v) continue;
-        const u = loop.u[k] + ((v - va) / (vb - va)) * (loop.u[k + 1] - loop.u[k]);
-        acrossAll.push(u);
-        if (loop.cavity) acrossCavities.push(u);
-      }
-    }
-    markSpans(acrossAll, j);
-    markSpans(acrossCavities, j);
+  for (let i = 0; i < width; i++) {
+    spread(i);
+    spread((height - 1) * width + i);
   }
+  for (let j = 0; j < height; j++) {
+    spread(j * width);
+    spread(j * width + width - 1);
+  }
+  while (head < tail) {
+    const cell = queue[head++];
+    const i = cell % width;
+    const j = (cell / width) | 0;
+    if (i > 0) spread(cell - 1);
+    if (i < width - 1) spread(cell + 1);
+    if (j > 0) spread(cell - width);
+    if (j < height - 1) spread(cell + width);
+  }
+  return openAir;
+}
+
+/**
+ * How many of the four axis rays from each cell leave the grid without meeting the
+ * shell — the cell's view of the sky, quartered. Four sweeps over the grid rather
+ * than a ray march per cell, since along a row the answer only changes at a wall.
+ */
+function countOpenSides(mask: Uint8Array, width: number, height: number): Uint8Array {
+  const open = new Uint8Array(width * height);
+  for (let j = 0; j < height; j++) {
+    const row = j * width;
+    let walled = false;
+    for (let i = 0; i < width; i++) {
+      const cell = row + i;
+      if (mask[cell] === CELL_SHELL) walled = true;
+      else if (!walled) open[cell]++;
+    }
+    walled = false;
+    for (let i = width - 1; i >= 0; i--) {
+      const cell = row + i;
+      if (mask[cell] === CELL_SHELL) walled = true;
+      else if (!walled) open[cell]++;
+    }
+  }
+  for (let i = 0; i < width; i++) {
+    let walled = false;
+    for (let j = 0; j < height; j++) {
+      const cell = j * width + i;
+      if (mask[cell] === CELL_SHELL) walled = true;
+      else if (!walled) open[cell]++;
+    }
+    walled = false;
+    for (let j = height - 1; j >= 0; j--) {
+      const cell = j * width + i;
+      if (mask[cell] === CELL_SHELL) walled = true;
+      else if (!walled) open[cell]++;
+    }
+  }
+  return open;
 }
 
 /**

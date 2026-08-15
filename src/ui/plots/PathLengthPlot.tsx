@@ -29,7 +29,7 @@ import {
   formatRSquared,
   metresToMillimetres,
 } from './format';
-import { createRgbaBuffer, rasteriseScatter } from './raster';
+import { createRgbaBuffer, fillRgbaBuffer, rasteriseScatter } from './raster';
 import {
   computePlotGeometry,
   DEFAULT_PLOT_MARGINS,
@@ -44,12 +44,12 @@ import {
   sampleDecayCurve,
   scaleOverRawUnits,
 } from './scales';
-import { approximateTextWidth, PLOT_COLORS } from './theme';
+import { approximateTextWidth, PLOT_COLORS, PLOT_PANEL_RGB } from './theme';
 import { useElementSize } from './useElementSize';
 import './plots.css';
 
 /** Low enough that the cloud shows density, high enough that a lone node is visible. */
-const POINT_ALPHA = 0.45;
+const POINT_ALPHA = 0.55;
 const CURVE_SAMPLES = 160;
 const CALLOUT_FONT_SIZE = 10.5;
 
@@ -147,6 +147,9 @@ export function PathLengthPlot({
       const bufferWidth = Math.max(1, Math.round(plot.area.width * ratio));
       const bufferHeight = Math.max(1, Math.round(plot.area.height * ratio));
       const buffer = createRgbaBuffer(bufferWidth, bufferHeight);
+      // The scatter *is* the evidence, so it gets the panel to itself rather than
+      // the blurred 3D view the dock is translucent over.
+      fillRgbaBuffer(buffer, PLOT_PANEL_RGB);
 
       // Scales over the raw arrays: metres and kelvin in, buffer pixels out, so
       // 100k values need no converted copy.
@@ -158,7 +161,7 @@ export function PathLengthPlot({
         min: colorMin,
         max: colorMax,
         alpha: POINT_ALPHA,
-        radius: ratio > 1 ? 1 : 0,
+        radius: stampRadius(ratio),
       });
 
       // putImageData ignores the canvas transform, so the offset is in device pixels.
@@ -282,6 +285,15 @@ export function PathLengthPlot({
       )}
     </PlotFrame>
   );
+}
+
+/**
+ * Half-size of a point in buffer pixels, chosen so a node covers about three CSS
+ * pixels whatever the display's density — a single device pixel is invisible on the
+ * dark panel, and a cloud of 5k nodes is far sparser than the 100k this can take.
+ */
+function stampRadius(devicePixelRatio: number): number {
+  return Math.max(1, Math.round(devicePixelRatio));
 }
 
 const NO_SOLVE = 'No solve yet — run a solve to plot temperature against conduction path length.';

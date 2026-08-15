@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { CELL_CAVITY, CELL_OUTSIDE, CELL_SHELL } from '@/core/types';
 import { normalize, sample } from '@/viewer/colormap';
-import { createRgbaBuffer, rasteriseField, rasteriseScatter } from './raster';
+import { createRgbaBuffer, fillRgbaBuffer, rasteriseField, rasteriseScatter } from './raster';
 import { makeScale, type LinearScale } from './scales';
+import { markColor, PLOT_PANEL_RGB } from './theme';
 
 function pixel(buffer: ReturnType<typeof createRgbaBuffer>, x: number, y: number) {
   const offset = (y * buffer.width + x) * 4;
@@ -16,6 +17,11 @@ function pixel(buffer: ReturnType<typeof createRgbaBuffer>, x: number, y: number
 
 function expectedColor(map: 'inferno', value: number, min: number, max: number) {
   return sample(map, normalize(value, min, max)).map((c) => Math.round(c * 255));
+}
+
+/** Points carry the lifted colormap, so the cold end never lands on the panel. */
+function expectedPointColor(map: 'inferno', value: number, min: number, max: number) {
+  return markColor(map, normalize(value, min, max)).map((c) => Math.round(c * 255));
 }
 
 describe('rasteriseField', () => {
@@ -90,6 +96,18 @@ describe('rasteriseField', () => {
   });
 });
 
+describe('fillRgbaBuffer', () => {
+  it('paints every pixel opaque, so a scatter blends onto a known ground', () => {
+    const buffer = createRgbaBuffer(2, 2);
+    fillRgbaBuffer(buffer, [0, 0.5, 1]);
+    for (let x = 0; x < 2; x++) {
+      for (let y = 0; y < 2; y++) {
+        expect(pixel(buffer, x, y)).toEqual([0, 128, 255, 255]);
+      }
+    }
+  });
+});
+
 describe('rasteriseScatter', () => {
   const style = { map: 'inferno' as const, min: 300, max: 400, alpha: 1, radius: 0 };
   const identity: LinearScale = makeScale({ min: 0, max: 10 }, 0, 10);
@@ -106,7 +124,7 @@ describe('rasteriseScatter', () => {
       style,
     );
     expect(drawn).toBe(1);
-    expect(pixel(buffer, 3, 4).slice(0, 3)).toEqual(expectedColor('inferno', 400, 300, 400));
+    expect(pixel(buffer, 3, 4).slice(0, 3)).toEqual(expectedPointColor('inferno', 400, 300, 400));
     expect(pixel(buffer, 3, 4)[3]).toBe(255);
     expect(pixel(buffer, 0, 0)[3]).toBe(0);
   });
@@ -154,8 +172,8 @@ describe('rasteriseScatter', () => {
   it('preserves the colour of a single translucent point over an empty buffer', () => {
     const buffer = createRgbaBuffer(4, 4);
     rasteriseScatter(buffer, [1], [1], [400], identity, identity, { ...style, alpha: 0.4 });
-    // Straight alpha: the colour must be the colormap colour, only less opaque.
-    expect(pixel(buffer, 1, 1).slice(0, 3)).toEqual(expectedColor('inferno', 400, 300, 400));
+    // Straight alpha: the colour must be the point colour, only less opaque.
+    expect(pixel(buffer, 1, 1).slice(0, 3)).toEqual(expectedPointColor('inferno', 400, 300, 400));
   });
 
   it('draws a square stamp for a non-zero radius, clipped at the edge', () => {
@@ -164,6 +182,20 @@ describe('rasteriseScatter', () => {
     expect(pixel(buffer, 0, 0)[3]).toBe(255);
     expect(pixel(buffer, 1, 1)[3]).toBe(255);
     expect(pixel(buffer, 2, 0)[3]).toBe(0);
+  });
+
+  it('keeps the coldest point clear of the panel it is drawn on', () => {
+    const buffer = createRgbaBuffer(4, 4);
+    fillRgbaBuffer(buffer, PLOT_PANEL_RGB);
+    rasteriseScatter(buffer, [1], [1], [300], identity, identity, style);
+    const point = pixel(buffer, 1, 1);
+    const panel = pixel(buffer, 0, 0);
+    // The raw colormap would put the cold end within a whisker of the panel.
+    const raw = expectedColor('inferno', 300, 300, 400);
+    expect(Math.max(...raw)).toBeLessThan(Math.max(...panel));
+    for (let channel = 0; channel < 3; channel++) {
+      expect(point[channel]).toBeGreaterThan(panel[channel] + 15);
+    }
   });
 
   it('draws nothing at zero opacity', () => {

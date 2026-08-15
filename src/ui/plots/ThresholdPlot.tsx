@@ -11,8 +11,8 @@
 import { useMemo, useRef } from 'react';
 import type { ColormapId, ThresholdResult } from '@/core/types';
 import { ABSOLUTE_ZERO_C } from '@/core/units';
-import { cssColor, normalize } from '@/viewer/colormap';
-import { PlotAxes, PlotFrame, PlotSurface, ThresholdMarker } from './PlotFrame';
+import { normalize } from '@/viewer/colormap';
+import { PlotAxes, PlotFrame, PlotPanel, PlotSurface, ThresholdMarker } from './PlotFrame';
 import {
   formatCelsius,
   formatCelsiusWithUnit,
@@ -31,16 +31,16 @@ import {
   type Interval,
   niceInterval,
 } from './scales';
+import { markCssColor } from './theme';
 import { useElementSize } from './useElementSize';
 import './plots.css';
 
 const HISTOGRAM_MARGINS = { ...DEFAULT_PLOT_MARGINS, left: 58 };
 /** Bars under the limit are still data, just not the answer. */
-const BELOW_THRESHOLD_OPACITY = 0.42;
+const BELOW_THRESHOLD_OPACITY = 0.6;
 /**
- * The cold end of every thermal colormap is near-black, which on a near-black
- * panel would erase the tallest bars. A hairline keeps their extent readable
- * without adding a second colour encoding.
+ * The bars carry the colormap lifted off the panel (`markColor`); the hairline is
+ * what still separates two neighbouring bins of nearly the same temperature.
  */
 const BAR_EDGE = 'rgba(232, 234, 240, 0.22)';
 
@@ -161,6 +161,7 @@ export function ThresholdPlot({
     >
       {geometry && !empty && result && (
         <PlotSurface geometry={geometry}>
+          <PlotPanel geometry={geometry} />
           <PlotAxes
             geometry={geometry}
             xTicks={xTicks}
@@ -187,7 +188,7 @@ export function ThresholdPlot({
                 y={top}
                 width={width}
                 height={barHeight}
-                fill={cssColor(colorMap, normalize(bar.centreKelvin, colorMin, colorMax))}
+                fill={markCssColor(colorMap, normalize(bar.centreKelvin, colorMin, colorMax))}
                 stroke={BAR_EDGE}
                 strokeWidth={0.5}
                 opacity={above ? 1 : BELOW_THRESHOLD_OPACITY}

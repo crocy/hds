@@ -14,6 +14,7 @@ import {
   legendInset,
   PlotAxes,
   PlotFrame,
+  PlotPanel,
   PlotSurface,
   ThresholdMarker,
   polylinePath,
@@ -165,6 +166,7 @@ export function SectionProfilePlot({
     >
       {geometry && !empty && (
         <PlotSurface geometry={geometry}>
+          <PlotPanel geometry={geometry} />
           {spans?.map((span) => (
             <SpanShade key={span.id} geometry={geometry} span={span} />
           ))}

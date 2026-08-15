@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { clamp, type PlotGeometry, scaleValue, type LinearScale, type PlotArea } from './scales';
-import { PLOT_COLORS } from './theme';
+import { PLOT_COLORS, PLOT_PANEL } from './theme';
 
 /** Retina is worth it; a 3× phone screen is not, for a 100k-point cloud. */
 const MAX_DEVICE_PIXEL_RATIO = 2;
@@ -117,6 +117,16 @@ function PlotCanvas({ geometry, paint }: PlotCanvasProps) {
   }, [geometry, paint]);
 
   return <canvas ref={canvasRef} className="hds-plot__canvas" aria-hidden="true" />;
+}
+
+/**
+ * An opaque backdrop for the data area, drawn before anything else in the SVG
+ * layer. Only for plots that draw no canvas: the canvas sits *under* this layer,
+ * so a plot with one paints its own ground into the pixel buffer instead.
+ */
+export function PlotPanel({ geometry }: { geometry: PlotGeometry }) {
+  const { area } = geometry;
+  return <rect x={area.x} y={area.y} width={area.width} height={area.height} fill={PLOT_PANEL} />;
 }
 
 export type PlotGrid = 'none' | 'x' | 'y' | 'both';

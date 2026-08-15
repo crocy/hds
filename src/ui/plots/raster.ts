@@ -9,13 +9,16 @@
  *
  * Colour comes from `viewer/colormap` so the plots and the 3D view speak one
  * colour language. `viewer/colormap` is imported directly rather than through the
- * `@/viewer` facade, which would pull three.js into the plot bundle.
+ * `@/viewer` facade, which would pull three.js into the plot bundle. Scatter points
+ * go through `markColor`, which lifts that map's near-black cold end off the panel;
+ * the field fill does not, because it covers the panel and carries its own ramp.
  */
 
 import type { ColormapId } from '@/core/types';
 import { CELL_OUTSIDE } from '@/core/types';
 import { normalize, sample } from '@/viewer/colormap';
 import { scaleValue, type LinearScale } from './scales';
+import { markColor } from './theme';
 
 export interface RgbaBuffer {
   /** Backed by a plain ArrayBuffer, so it can be handed straight to `new ImageData`. */
@@ -28,6 +31,22 @@ export function createRgbaBuffer(width: number, height: number): RgbaBuffer {
   const w = Math.max(1, Math.floor(width));
   const h = Math.max(1, Math.floor(height));
   return { data: new Uint8ClampedArray(w * h * 4), width: w, height: h };
+}
+
+/**
+ * Paints the whole buffer opaque. A scatter blends onto it, which is the only way
+ * to give the points a known backdrop: `putImageData` replaces the canvas pixels it
+ * covers, alpha included, so anything drawn under the buffer would be wiped out.
+ */
+export function fillRgbaBuffer(buffer: RgbaBuffer, color: readonly [number, number, number]): void {
+  const [r, g, b] = color;
+  const data = buffer.data;
+  for (let offset = 0; offset < data.length; offset += 4) {
+    data[offset] = r * 255;
+    data[offset + 1] = g * 255;
+    data[offset + 2] = b * 255;
+    data[offset + 3] = 255;
+  }
 }
 
 function reuseOrCreate(out: RgbaBuffer | undefined, width: number, height: number): RgbaBuffer {
@@ -158,7 +177,7 @@ export function rasteriseScatter(
     if (centreX + radius < 0 || centreX - radius >= width) continue;
     if (centreY + radius < 0 || centreY - radius >= height) continue;
 
-    const [r, g, b] = sample(style.map, normalize(value[i], style.min, style.max));
+    const [r, g, b] = markColor(style.map, normalize(value[i], style.min, style.max));
     const left = Math.max(0, centreX - radius);
     const right = Math.min(width - 1, centreX + radius);
     const top = Math.max(0, centreY - radius);
