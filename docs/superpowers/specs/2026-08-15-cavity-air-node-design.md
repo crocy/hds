@@ -109,7 +109,7 @@ The cavity row accumulates only these couplings and never receives a source term
 convergence it therefore states exactly `Σ h·A·(T_wall − T_cavity) = 0` — energy
 conservation for the pocket is imposed by the matrix, not asserted afterwards.
 
-### Radiation
+### Radiation, and the per-node split
 
 This is the fiddly part, and the reason the change is not purely mechanical.
 
@@ -118,15 +118,30 @@ Radiation is applied per **node**, not per triangle, because `h_rad` reproduces
 is taken at. A node on a cavity rim has incident triangles in both environments, and
 `computeNodeEmissivity` currently area-weights them into one number aimed at ambient.
 
-It splits into two accumulations over the same triangle loop:
+The same carry-over happens a second time, for convection: `nodeConvectionCoefficients`
+in [solve.ts](../../../src/physics/solve.ts) area-weights `hConv[t]` onto nodes so the
+heat balance can work per node. Both need the identical treatment, so this is one shared
+helper rather than two parallel implementations:
 
-- `emissivityToAmbient[node]` — the `Σ ε_t·A_t/3` share from open-air triangles
-- `emissivityToCavity[node]` and `nodeCavity[node]` — the share from cavity-facing
-  triangles, and which cavity it belongs to
+```ts
+/** Carries a per-triangle surface coefficient onto nodes, split by what it exchanges with. */
+export interface NodeSurfaceSplit {
+  toAmbient: Float64Array;
+  toCavity: Float64Array;
+  /** Which cavity `toCavity` belongs to, per node. -1 where there is none. */
+  nodeCavity: Int32Array;
+}
 
-Each is normalised by `nodeArea[node]`, preserving the existing property that
-`ε_node · nodeArea` reproduces `Σ ε_t·A_t/3` exactly. The two shares sum to today's
-single blended value, so no radiating area is created or lost.
+export function splitNodeCoefficient(
+  model: ThermalModel,
+  perTriangle: ArrayLike<number>,
+  cavityDof: Int32Array,
+): NodeSurfaceSplit;
+```
+
+Each share is normalised by `nodeArea[node]`, preserving the existing property that
+`coefficient_node · nodeArea` reproduces `Σ c_t·A_t/3` exactly. The two shares sum to
+today's single blended value, so no radiating or convecting area is created or lost.
 
 Where a node's cavity-facing triangles belong to more than one cavity, the whole share
 goes to the cavity with the largest area at that node. This is a bounded approximation,
@@ -137,6 +152,10 @@ against `cavityDof[nodeCavity[node]]`, linearised at that cavity's temperature f
 previous Picard iteration. The outer loop already refreezes coefficients each pass, so
 this converges by the same argument as the wall temperatures.
 
+Assembly of convection stays per triangle, where it already is and where `triCavity` is
+directly available — the split exists for the balance, and for the per-node radiation the
+solver has always assembled that way.
+
 ### Adiabatic cavities
 
 `cavityDof` is `-1` for them. Their triangles have `h = 0` and `ε = 0` and so contribute
@@ -145,18 +164,20 @@ nothing, exactly as today. No DOF is allocated, no row is singular, and no spuri
 
 ## 5. Heat balance
 
-`lostByConvection` and `lostByRadiation` in [balance.ts](../../../src/analysis/balance.ts)
-sum over every triangle and every node against `scenario.ambient`. They must count only
-exchange with real ambient:
+`computeHeatBalance` in [balance.ts](../../../src/analysis/balance.ts) takes
+`hConvection[node]` and `emissivity[node]` and evaluates both against
+`scenario.ambient`. Its doc comment already states the contract — "cavity de-rating is
+the caller's job" — and that stays true: the caller now hands it the `toAmbient` share of
+each split, so the module still knows nothing about enclosures.
 
-- convection: skip triangles with a live cavity id
-- radiation: use `emissivityToAmbient`, not the blended emissivity
+Cavity exchange is therefore absent from `lostByConvection` and `lostByRadiation` by
+construction rather than by a skip test. It is reported per cavity instead, where
+`netFlow` is computed from the `toCavity` shares — independently of the matrix, so it is
+a genuine check rather than an algebraic identity.
 
-Cavity exchange is not a loss and is not added to either total. It is reported per cavity
-instead, where `netFlow` is computed independently of the matrix — by summing the wall
-flows — so it is a genuine check rather than an algebraic identity.
-
-`residual = injected − lost` keeps its meaning and its 1 % alarm.
+`HeatBalanceInput` gains the `toCavity` shares and the cavity temperatures it needs to
+compute `perCavity`. `residual = injected − lost` keeps its meaning and its alarm, which
+`main` has since tightened to 0.1 % of throughput (`ENERGY_RESIDUAL_FRACTION = 1e-3`).
 
 ## 6. Invariants
 
@@ -165,8 +186,8 @@ flows — so it is a genuine check rather than an algebraic identity.
    in the balance.
 2. **Ambient is the only exit.** Total loss equals the loss through open-air triangles.
    After this change those are the same surfaces, so the two figures must agree.
-3. **No radiating area is created or destroyed.** For every node,
-   `emissivityToAmbient + emissivityToCavity` equals the emissivity the current code
+3. **No exchanging area is created or destroyed.** For every node and for both
+   coefficients, `toAmbient + toCavity` equals the single blended value the current code
    computes.
 4. **A cavity sits between its walls' extremes.** Its temperature is bounded by the
    minimum and maximum wall temperature bounding it — a weighted mean cannot exceed its
@@ -179,8 +200,8 @@ flows — so it is a genuine check rather than an algebraic identity.
 - A two-shell box fixture — inner shell hot, outer shell to ambient — small enough to
   reason about by hand. Asserts invariants 1 and 4, and that total loss is unchanged by
   refining the cavity's mesh.
-- Node emissivity split: invariant 3, on a fixture with a rim node straddling cavity and
-  open air.
+- `splitNodeCoefficient`: invariant 3, on a fixture with a rim node straddling cavity and
+  open air. Run for both emissivity and convection, since one helper now serves both.
 - A rim node bridging two cavities lands wholly in the larger one, and nothing is lost.
 - An adiabatic cavity allocates no DOF and raises no warning.
 
