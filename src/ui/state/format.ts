@@ -4,6 +4,7 @@
  * reach a °C field by accident.
  */
 
+import type { Vec3 } from '@/core/types';
 import { kelvinToCelsius } from '@/core/units';
 
 export function formatCelsius(kelvin: number, digits = 1): string {
@@ -21,6 +22,12 @@ export function formatWatts(watts: number, digits = 2): string {
 export function formatMillimetres(metres: number, digits = 2): string {
   if (!Number.isFinite(metres)) return '—';
   return `${(metres * 1000).toFixed(digits)} mm`;
+}
+
+/** A point in metres as the millimetre triple CAD quotes, e.g. "21.7, -177.5, 171.1 mm". */
+export function formatPointMillimetres(point: Vec3, digits = 1): string {
+  if (!point.every(Number.isFinite)) return '—';
+  return `${point.map((axis) => (axis * 1000).toFixed(digits)).join(', ')} mm`;
 }
 
 export function formatArea(squareMetres: number): string {

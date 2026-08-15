@@ -16,7 +16,7 @@
  * `Contact.nodePairs` still describes node-to-node conductances.
  */
 
-import { PERFECT_CONTACT, type Contact, type ThermalModel } from '../core/types';
+import { PERFECT_CONTACT, type Contact, type ThermalModel, type Vec3 } from '../core/types';
 import {
   buildBvh,
   closestPointInto,
@@ -292,6 +292,34 @@ export function contactArea(contact: Contact): number {
   let total = 0;
   for (let i = 0; i < contact.pairArea.length; i++) total += contact.pairArea[i];
   return total;
+}
+
+/**
+ * Where a contact sits: the area-weighted midpoint of its node pairs, metres.
+ *
+ * Two patches of the same part pairing are alike in everything the UI shows except
+ * this, so it is what tells "four corners of one bezel" from "the same joint found
+ * four times" without opening the overlay.
+ */
+export function contactCentroid(model: ThermalModel, contact: Contact): Vec3 {
+  let weight = 0;
+  for (let i = 0; i < contact.pairArea.length; i++) weight += contact.pairArea[i];
+  // A degenerate mesh carries no area; fall back to a plain mean over the pairs.
+  const uniform = !(weight > 0);
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  let total = 0;
+  for (let i = 0; i < contact.pairArea.length; i++) {
+    const a = contact.nodePairs[i * 2] * 3;
+    const b = contact.nodePairs[i * 2 + 1] * 3;
+    const share = uniform ? 1 : contact.pairArea[i];
+    x += (model.nodes[a] + model.nodes[b]) * 0.5 * share;
+    y += (model.nodes[a + 1] + model.nodes[b + 1]) * 0.5 * share;
+    z += (model.nodes[a + 2] + model.nodes[b + 2]) * 0.5 * share;
+    total += share;
+  }
+  return total > 0 ? [x / total, y / total, z / total] : [0, 0, 0];
 }
 
 function buildContact(

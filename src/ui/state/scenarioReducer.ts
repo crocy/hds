@@ -59,6 +59,8 @@ export type ScenarioAction =
   | { type: 'contacts/replace'; contacts: Contact[] }
   | { type: 'contacts/add'; contact: Contact }
   | { type: 'contacts/patch'; id: string; patch: ContactPatch }
+  /** One edit across every patch of a joint; see `ui/state/contactGroups`. */
+  | { type: 'contacts/patchMany'; ids: readonly string[]; patch: ContactPatch }
   | { type: 'contacts/remove'; id: string }
   | { type: 'cavities/replace'; cavities: Cavity[] }
   | { type: 'cavities/patch'; id: number; patch: CavityPatch }
@@ -161,18 +163,12 @@ export function scenarioReducer(state: Scenario, action: ScenarioAction): Scenar
     case 'contacts/add':
       return { ...state, contacts: [...state.contacts, action.contact] };
 
-    case 'contacts/patch': {
-      let changed = false;
-      const contacts = state.contacts.map((contact) => {
-        if (contact.id !== action.id) return contact;
-        const patched = { ...contact, ...action.patch };
-        if (patched.conductance === contact.conductance && patched.enabled === contact.enabled) {
-          return contact;
-        }
-        changed = true;
-        return patched;
-      });
-      return changed ? { ...state, contacts } : state;
+    case 'contacts/patch':
+      return patchContacts(state, (contact) => contact.id === action.id, action.patch);
+
+    case 'contacts/patchMany': {
+      const ids = new Set(action.ids);
+      return patchContacts(state, (contact) => ids.has(contact.id), action.patch);
     }
 
     case 'contacts/remove': {
@@ -209,6 +205,24 @@ export function scenarioReducer(state: Scenario, action: ScenarioAction): Scenar
     default:
       return state;
   }
+}
+
+function patchContacts(
+  state: Scenario,
+  selects: (contact: Contact) => boolean,
+  patch: ContactPatch,
+): Scenario {
+  let changed = false;
+  const contacts = state.contacts.map((contact) => {
+    if (!selects(contact)) return contact;
+    const patched = { ...contact, ...patch };
+    if (patched.conductance === contact.conductance && patched.enabled === contact.enabled) {
+      return contact;
+    }
+    changed = true;
+    return patched;
+  });
+  return changed ? { ...state, contacts } : state;
 }
 
 /**

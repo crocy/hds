@@ -3,7 +3,9 @@ import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules', 'public'] },
+  // .claude holds agent worktrees — separate checkouts with their own tsconfig,
+  // which the type-aware parser cannot resolve from here.
+  { ignores: ['dist', 'node_modules', 'public', '.claude'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

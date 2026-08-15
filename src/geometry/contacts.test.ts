@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { modelFromMesh, twoStripModel } from '../core/testModels';
 import type { ThermalModel, Vec3 } from '../core/types';
-import { contactArea, createContact, detectContacts, DEFAULT_CONTACT_TOLERANCE } from './contacts';
+import {
+  contactArea,
+  contactCentroid,
+  createContact,
+  detectContacts,
+  DEFAULT_CONTACT_TOLERANCE,
+} from './contacts';
 
 interface Mesh {
   positions: number[];
@@ -171,6 +177,18 @@ describe('detectContacts', () => {
     });
     expect(contacts).toHaveLength(1);
     expect(contacts[0].conductance).toBe(500);
+  });
+});
+
+describe('contactCentroid', () => {
+  it('lands on the mating face, which is what tells two patches of a joint apart', () => {
+    const model = stackedBoxes(0);
+    const [x, y, z] = contactCentroid(model, detectContacts(model)[0]);
+
+    expect(z).toBeCloseTo(0.1, 3);
+    // Centred on the upper box's footprint: the joint is where it rests, not the origin.
+    expect(x).toBeCloseTo(0.038, 2);
+    expect(y).toBeCloseTo(0.042, 2);
   });
 });
 

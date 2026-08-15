@@ -126,6 +126,27 @@ describe('scenarioReducer', () => {
     expect(after.contacts[0].conductance).toBe(PERFECT_CONTACT);
     expect(after.contacts[0].nodePairs).toBe(contact.nodePairs);
   });
+
+  it('patches every patch of a joint at once, leaving the rest identical', () => {
+    const second = { ...contact, id: 'contact-2', conductance: 900 };
+    const other = { ...contact, id: 'contact-3', partB: 'c-2' };
+    const before = scenarioWith({ contacts: [contact, second, other] });
+    const after = scenarioReducer(before, {
+      type: 'contacts/patchMany',
+      ids: ['contact-1', 'contact-2'],
+      patch: { conductance: 250 },
+    });
+
+    expect(after.contacts.map((c) => c.conductance)).toEqual([250, 250, contact.conductance]);
+    expect(after.contacts[2]).toBe(other);
+    expect(
+      scenarioReducer(after, {
+        type: 'contacts/patchMany',
+        ids: ['contact-1', 'contact-2'],
+        patch: { conductance: 250 },
+      }),
+    ).toBe(after);
+  });
 });
 
 describe('patchBoundaryCondition', () => {

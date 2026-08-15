@@ -482,6 +482,51 @@ input[type='checkbox'] {
   gap: 4px;
 }
 
+/* Rows that open in place need room to open into, or every joint is read through a slot. */
+.entity-list.expandable {
+  max-height: 420px;
+}
+
+/* Contacts: the touch points of one joint, revealed under its row. */
+.entity-sublist {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0 0 0 8px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.subentity {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.point-name {
+  flex: 1;
+  font-size: 11px;
+}
+
+.expander {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.flag {
+  color: var(--warning);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.undo-bar {
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px 5px 4px 8px;
+}
+
 /* -- results -------------------------------------------------------------- */
 
 .stats {
