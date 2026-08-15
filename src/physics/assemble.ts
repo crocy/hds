@@ -7,7 +7,7 @@
  * pure correlations in their own modules; this file decides where they apply.
  */
 
-import type { Part, Scenario, Target, ThermalModel } from '../core/types';
+import type { Cavity, Part, Scenario, Target, ThermalModel } from '../core/types';
 import { buildBvh, createHitBuffer, raycastInto, type Bvh, type HitBuffer } from '../geometry/bvh';
 import { computeConvectionCoefficients } from './convection';
 import { resolvePart } from './materials';
@@ -19,8 +19,12 @@ const NO_NODES = new Uint32Array(0);
 export interface DofMap {
   /** node → degree of freedom, −1 for nodes excluded from the system. */
   nodeDof: Int32Array;
-  /** dof → owning part index. DOFs never span parts. */
+  /** dof → owning part index, node DOFs only. DOFs never span parts. */
   dofPart: Int32Array;
+  /** DOF of each cavity's trapped air, indexed by cavity id. −1 for adiabatic or absent. */
+  cavityDof: Int32Array;
+  /** Node DOFs occupy 0..nodeDofCount; the cavity DOFs follow. */
+  nodeDofCount: number;
   dofCount: number;
 }
 
@@ -68,7 +72,41 @@ export function buildDofMap(model: ThermalModel, scenario: Scenario): DofMap {
     dofPart.push(part);
   }
 
-  return { nodeDof, dofPart: Int32Array.from(dofPart), dofCount };
+  const cavities = assignCavityDofs(scenario.cavities, dofCount);
+  return {
+    nodeDof,
+    dofPart: Int32Array.from(dofPart),
+    cavityDof: cavities.cavityDof,
+    nodeDofCount: dofCount,
+    dofCount: cavities.dofCount,
+  };
+}
+
+/**
+ * One DOF for the air in each **live** cavity — one whose condition is not `adiabatic` —
+ * numbered from `firstDof`, so everything that walks the solution vector as nodes can
+ * stop before them.
+ *
+ * An adiabatic cavity exchanges nothing at all: `h = 0` and `ε = 0` would leave its row
+ * empty and the matrix singular, and the isolated-DOF rescue that catches that would
+ * report it as a modelling mistake when it is exactly what the user asked for.
+ */
+function assignCavityDofs(
+  cavities: Cavity[],
+  firstDof: number,
+): { cavityDof: Int32Array; dofCount: number } {
+  // Indexed by cavity id, so ids naming no cavity — 0 above all, which marks open air —
+  // read −1 like adiabatic ones do.
+  let maxId = 0;
+  for (const cavity of cavities) maxId = Math.max(maxId, cavity.id);
+  const cavityDof = new Int32Array(maxId + 1).fill(-1);
+
+  let dofCount = firstDof;
+  for (const cavity of cavities) {
+    if (cavity.condition === 'adiabatic') continue;
+    cavityDof[cavity.id] = dofCount++;
+  }
+  return { cavityDof, dofCount };
 }
 
 /**
@@ -363,6 +401,80 @@ export function convectionOverrides(model: ThermalModel, scenario: Scenario): Fl
     for (const t of resolveTargetTriangles(model, bc.target)) overrides[t] = bc.h;
   }
   return overrides;
+}
+
+/** Carries a per-triangle surface coefficient onto nodes, split by what it exchanges with. */
+export interface NodeSurfaceSplit {
+  toAmbient: Float64Array;
+  toCavity: Float64Array;
+  /** Which cavity `toCavity` belongs to, per node. −1 where there is none. */
+  nodeCavity: Int32Array;
+}
+
+/**
+ * Splits an area-weighted carry-over in two, by the environment each triangle faces.
+ *
+ * A node on a cavity rim has incident triangles in both environments, and the single
+ * blended coefficient the carry-over used to produce could only be aimed at one of them.
+ * Each share is normalised by `nodeArea` exactly as `computeNodeEmissivity` does, so
+ * `share·nodeArea` still reproduces Σ c_t·A_t/3 and the two shares sum to the old
+ * blended value: no exchanging area is created or lost.
+ *
+ * Where a node's cavity-facing triangles span more than one cavity, the whole cavity
+ * share goes to the one holding the largest area there rather than being divided. The
+ * heat still lands in a sealed pocket, so only which pocket is approximate. That choice
+ * is made on area alone, so it does not move when the coefficient does.
+ */
+export function splitNodeCoefficient(
+  model: ThermalModel,
+  perTriangle: ArrayLike<number>,
+  cavityDof: Int32Array,
+): NodeSurfaceSplit {
+  const toAmbient = new Float64Array(model.nodeCount);
+  const toCavity = new Float64Array(model.nodeCount);
+  const nodeCavity = new Int32Array(model.nodeCount).fill(-1);
+  // How much of each cavity a node sees, keyed node·stride + cavity, so the running
+  // largest can be tracked without a map per node.
+  const seenArea = new Map<number, number>();
+  const stride = Math.max(1, cavityDof.length);
+  const largestArea = new Float64Array(model.nodeCount);
+
+  for (let t = 0; t < model.triCount; t++) {
+    const cavity = liveCavityOf(model.triCavity[t], cavityDof);
+    const share = (perTriangle[t] * model.triArea[t]) / 3;
+    const area = model.triArea[t] / 3;
+    for (let c = 0; c < 3; c++) {
+      const node = model.tris[t * 3 + c];
+      if (cavity < 0) {
+        toAmbient[node] += share;
+        continue;
+      }
+      toCavity[node] += share;
+      const key = node * stride + cavity;
+      const seen = (seenArea.get(key) ?? 0) + area;
+      seenArea.set(key, seen);
+      if (seen > largestArea[node]) {
+        largestArea[node] = seen;
+        nodeCavity[node] = cavity;
+      }
+    }
+  }
+
+  for (let node = 0; node < model.nodeCount; node++) {
+    const area = model.nodeArea[node];
+    toAmbient[node] = area > 0 ? toAmbient[node] / area : 0;
+    toCavity[node] = area > 0 ? toCavity[node] / area : 0;
+  }
+  return { toAmbient, toCavity, nodeCavity };
+}
+
+/**
+ * The cavity a triangle exchanges with, or −1 when that is ambient: open air, and a
+ * cavity with no DOF, are the same thing to everything downstream.
+ */
+function liveCavityOf(cavityId: number, cavityDof: Int32Array): number {
+  if (cavityId >= cavityDof.length) return -1;
+  return cavityDof[cavityId] >= 0 ? cavityId : -1;
 }
 
 export interface SurfaceCoefficients {

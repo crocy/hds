@@ -8,7 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import { mergeMeshes, modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
 import { DEFAULT_SOLVER_SETTINGS } from '../core/types';
-import type { BoundaryCondition, Part, Scenario, ThermalModel } from '../core/types';
+import type { BoundaryCondition, Cavity, Part, Scenario, ThermalModel } from '../core/types';
+import { computeNodeEmissivity, computeTriangleEmissivity } from './radiation';
 import {
   applyFixedTemperatures,
   assembleSystem,
@@ -20,6 +21,7 @@ import {
   partIndexOf,
   resolveTargetNodes,
   resolveTargetTriangles,
+  splitNodeCoefficient,
   surfaceCoefficients,
 } from './assemble';
 
@@ -164,6 +166,38 @@ describe('buildDofMap', () => {
       else solvable++;
     }
     expect(dofs.dofCount).toBe(solvable);
+  });
+
+  it('appends one DOF per live cavity after every node DOF', () => {
+    const model = modelFromMesh(stripMesh(0.1, 0.05, 2, 1));
+    const dofs = buildDofMap(
+      model,
+      scenarioWith({
+        cavities: [
+          cavityWith(),
+          cavityWith({ id: 2, condition: 'adiabatic' }),
+          cavityWith({ id: 3, condition: 'insulated' }),
+        ],
+      }),
+    );
+
+    expect(dofs.nodeDofCount).toBe(model.nodeCount);
+    expect(dofs.dofCount).toBe(model.nodeCount + 2);
+    expect(dofs.cavityDof[1]).toBe(model.nodeCount);
+    expect(dofs.cavityDof[3]).toBe(model.nodeCount + 1);
+    // An adiabatic cavity exchanges nothing, so its row would be singular; id 0 is the
+    // open-air marker and never names a cavity.
+    expect(dofs.cavityDof[2]).toBe(-1);
+    expect(dofs.cavityDof[0]).toBe(-1);
+    // dofPart stays node-only: nothing walks it past the node DOFs.
+    expect(dofs.dofPart.length).toBe(dofs.nodeDofCount);
+  });
+
+  it('leaves the count alone when there are no cavities', () => {
+    const model = modelFromMesh(stripMesh(0.1, 0.05, 2, 1));
+    const dofs = buildDofMap(model, scenarioWith());
+    expect(dofs.dofCount).toBe(dofs.nodeDofCount);
+    expect(Array.from(dofs.cavityDof)).toEqual([-1]);
   });
 
   it('mixes body types across parts without renumbering the wrong one', () => {
@@ -428,6 +462,151 @@ describe('surface coefficients', () => {
       ],
     });
     expect(Number.isNaN(convectionOverrides(model, scenario)[0])).toBe(true);
+  });
+});
+
+/**
+ * Two triangles, (0,1,3) and (0,3,2): nodes 0 and 3 are shared, nodes 1 and 2 belong to
+ * one triangle each. Put the two triangles in different environments and node 0 is a
+ * cavity rim node with a hand-computable split.
+ */
+function rimModel(): ThermalModel {
+  return modelFromMesh(stripMesh(0.1, 0.05, 1, 1));
+}
+
+function cavityWith(overrides: Partial<Cavity> = {}): Cavity {
+  return {
+    id: 1,
+    name: 'inside',
+    condition: 'stillAir',
+    h: 2.5,
+    emissivity: 0.4,
+    fillK: 0.026,
+    triCount: 0,
+    ...overrides,
+  };
+}
+
+/** The single blended value the pre-split carry-over produced: the area-weighted mean. */
+function blendOntoNodes(model: ThermalModel, perTriangle: ArrayLike<number>): Float64Array {
+  const blended = new Float64Array(model.nodeCount);
+  for (let t = 0; t < model.triCount; t++) {
+    const share = (perTriangle[t] * model.triArea[t]) / 3;
+    for (let c = 0; c < 3; c++) blended[model.tris[t * 3 + c]] += share;
+  }
+  for (let node = 0; node < model.nodeCount; node++) {
+    const area = model.nodeArea[node];
+    blended[node] = area > 0 ? blended[node] / area : 0;
+  }
+  return blended;
+}
+
+describe('splitNodeCoefficient', () => {
+  it('routes each node’s share by what its triangles face', () => {
+    const model = rimModel();
+    model.triCavity[0] = 1; // triangle 1 stays open air
+    // Cavity 1 is live: its DOF is 4, one past the four node DOFs.
+    const split = splitNodeCoefficient(model, [6, 2], Int32Array.of(-1, 4));
+
+    // Node 1 sees only the cavity triangle, node 2 only the open-air one, so each takes
+    // its triangle's coefficient whole.
+    expect(split.toCavity[1]).toBeCloseTo(6, 6);
+    expect(split.toAmbient[1]).toBe(0);
+    expect(split.nodeCavity[1]).toBe(1);
+    expect(split.toAmbient[2]).toBeCloseTo(2, 6);
+    expect(split.toCavity[2]).toBe(0);
+    expect(split.nodeCavity[2]).toBe(-1);
+
+    // Nodes 0 and 3 take A/3 from each triangle over a nodeArea of 2A/3, so both shares
+    // are halved.
+    for (const node of [0, 3]) {
+      expect(split.toCavity[node]).toBeCloseTo(3, 6);
+      expect(split.toAmbient[node]).toBeCloseTo(1, 6);
+      expect(split.nodeCavity[node]).toBe(1);
+    }
+  });
+
+  it('sends a cavity with no DOF to ambient, exactly as open air', () => {
+    // An adiabatic cavity owns no DOF, so there is nothing for its walls to exchange
+    // with; routing them to the cavity share would strand their watts.
+    const model = rimModel();
+    model.triCavity[0] = 1;
+    const split = splitNodeCoefficient(model, [6, 2], Int32Array.of(-1, -1));
+
+    expect(split.toAmbient[1]).toBeCloseTo(6, 6);
+    for (let node = 0; node < model.nodeCount; node++) {
+      expect(split.toCavity[node]).toBe(0);
+      expect(split.nodeCavity[node]).toBe(-1);
+    }
+  });
+
+  it('splits the emissivity computeNodeEmissivity blends, node for node', () => {
+    // Invariant 3: no radiating area is created or destroyed by the split.
+    const model = modelFromMesh(stripMesh(0.1, 0.05, 3, 2));
+    for (const t of [0, 1, 4]) model.triCavity[t] = 1;
+    for (const t of [7, 8]) model.triCavity[t] = 2;
+    const scenario = scenarioWith({
+      cavities: [cavityWith(), cavityWith({ id: 2, condition: 'adiabatic' })],
+    });
+    // Cavity 2 is adiabatic, so only cavity 1 owns a DOF.
+    const split = splitNodeCoefficient(
+      model,
+      computeTriangleEmissivity(model, scenario),
+      Int32Array.of(-1, model.nodeCount, -1),
+    );
+
+    const blended = computeNodeEmissivity(model, scenario);
+    let cavityFacing = 0;
+    for (let node = 0; node < model.nodeCount; node++) {
+      expect(split.toAmbient[node] + split.toCavity[node]).toBeCloseTo(blended[node], 12);
+      if (split.toCavity[node] > 0) cavityFacing++;
+    }
+    expect(cavityFacing).toBeGreaterThan(0);
+  });
+
+  it('splits the film coefficient the same way, since one helper serves both', () => {
+    const model = modelFromMesh(stripMesh(0.1, 0.05, 3, 2));
+    for (const t of [0, 1, 4]) model.triCavity[t] = 1;
+    const scenario = scenarioWith({ cavities: [cavityWith()] });
+    const { hConv } = surfaceCoefficients(model, scenario, ambientField(model));
+    const split = splitNodeCoefficient(model, hConv, Int32Array.of(-1, model.nodeCount));
+
+    const blended = blendOntoNodes(model, hConv);
+    for (let node = 0; node < model.nodeCount; node++) {
+      expect(split.toAmbient[node] + split.toCavity[node]).toBeCloseTo(blended[node], 12);
+    }
+    // The cavity's own film coefficient really is in there, not the correlation's.
+    expect(split.toCavity[model.tris[0]]).toBeGreaterThan(0);
+  });
+
+  it('gives a node bridging two cavities wholly to the larger, losing nothing', () => {
+    // Node 0 is the shared corner of a 2 m² triangle in cavity 2 and a 0.5 m² one in
+    // cavity 1. Splitting its share between the two would be the alternative; assigning
+    // it whole keeps the heat inside a sealed pocket either way, and only which pocket
+    // is approximate.
+    const model = modelFromMesh({
+      positions: [0, 0, 0, 2, 0, 0, 0, 2, 0, -1, 0, 0, 0, -1, 0],
+      indices: [0, 1, 2, 0, 3, 4],
+      partOf: [0, 0],
+      faceOf: [0, 0],
+    });
+    model.triCavity[0] = 2;
+    model.triCavity[1] = 1;
+    const split = splitNodeCoefficient(model, [3, 9], Int32Array.of(-1, 6, 5));
+
+    expect(split.nodeCavity[0]).toBe(2);
+    // (3·2/3 + 9·0.5/3) / (2/3 + 0.5/3) = 3.5 / 0.8333… = 4.2
+    expect(split.toCavity[0]).toBeCloseTo(4.2, 5);
+    expect(split.toAmbient[0]).toBe(0);
+    for (const node of [1, 2]) expect(split.nodeCavity[node]).toBe(2);
+    for (const node of [3, 4]) expect(split.nodeCavity[node]).toBe(1);
+
+    // Neither cavity loses any of its coefficient·area to the reassignment.
+    let carried = 0;
+    for (let node = 0; node < model.nodeCount; node++) {
+      carried += split.toCavity[node] * model.nodeArea[node];
+    }
+    expect(carried).toBeCloseTo(3 * 2 + 9 * 0.5, 5);
   });
 });
 

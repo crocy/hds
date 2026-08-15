@@ -89,7 +89,7 @@ export function solveShell(
   };
 
   const dofs = buildDofMap(model, scenario);
-  if (dofs.dofCount === 0) {
+  if (dofs.nodeDofCount === 0) {
     warn('No solvable nodes: every part is an insulator, so nothing was solved');
   }
 
@@ -360,8 +360,8 @@ function fixedNodeList(model: ThermalModel, dofs: DofMap, fixedDof: Uint8Array):
  * balance integrates.
  */
 function nodeLoads(model: ThermalModel, dofs: DofMap, loadPerDof: Float64Array): Float64Array {
-  const dofArea = new Float64Array(dofs.dofCount);
-  const dofNodeCount = new Int32Array(dofs.dofCount);
+  const dofArea = new Float64Array(dofs.nodeDofCount);
+  const dofNodeCount = new Int32Array(dofs.nodeDofCount);
   for (let node = 0; node < model.nodeCount; node++) {
     const dof = dofs.nodeDof[node];
     if (dof < 0) continue;

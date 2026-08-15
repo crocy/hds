@@ -591,6 +591,30 @@ describe('body types', () => {
     expect(result.minTemp).toBeCloseTo(400, 6);
     expectEnergyConserved(result);
   });
+
+  it('still says nothing was solved when a live cavity is the only DOF left', () => {
+    // A cavity owns a DOF of its own, so the system is not empty even when every part
+    // is an insulator. The warning is about nodes, and it has to go on saying so.
+    const model = modelFromMesh(stripMesh(0.1, 0.02, 4, 1));
+    const result = solveShell(
+      model,
+      scenarioWith({
+        partOverrides: { 'part-0': { bodyType: 'insulator' } },
+        cavities: [
+          {
+            id: 1,
+            name: 'inside',
+            condition: 'stillAir',
+            h: 2.5,
+            emissivity: 0.4,
+            fillK: 0.026,
+            triCount: 0,
+          },
+        ],
+      }),
+    );
+    expect(result.warnings.join('\n')).toContain('No solvable nodes');
+  });
 });
 
 describe('outer loop', () => {
