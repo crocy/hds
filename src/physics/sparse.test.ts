@@ -100,6 +100,29 @@ describe('CsrMatrix', () => {
   });
 });
 
+/**
+ * A chain of unit conductances with one very stiff link, and a right-hand side whose
+ * first entry carries that link's conductance times a pinned value.
+ *
+ * This is the shape the thermal system takes around a PERFECT_CONTACT joint on a
+ * fixed-temperature part: eliminating the pin folds g·T_fixed into its neighbour's row,
+ * so ‖b‖ is set by the joint's stiffness rather than by the watts in the problem.
+ */
+function stiffLinkChain(n: number, stiffness: number): { matrix: CsrMatrix; b: Float64Array } {
+  const builder = new SparseBuilder(n);
+  const b = new Float64Array(n).fill(1);
+  for (let i = 0; i < n; i++) builder.add(i, i, 1e-3);
+  for (let i = 0; i + 1 < n; i++) {
+    const g = i === 0 ? stiffness : 1;
+    builder.add(i, i, g);
+    builder.add(i + 1, i + 1, g);
+    builder.add(i, i + 1, -g);
+    builder.add(i + 1, i, -g);
+  }
+  b[0] += stiffness * 400;
+  return { matrix: builder.compress(), b };
+}
+
 describe('conjugateGradient', () => {
   it('solves a 2×2 system with a known exact answer', () => {
     // 4x + y = 1, x + 3y = 2  →  x = 1/11, y = 7/11.
@@ -158,6 +181,54 @@ describe('conjugateGradient', () => {
     expect(result.converged).toBe(true);
     expect(result.relativeResidual).toBe(0);
     for (const value of result.x) expect(value).toBe(0);
+  });
+
+  it('judges the residual against a caller-supplied scale instead of ‖b‖', () => {
+    const { matrix, b } = stiffLinkChain(40, 1e6);
+    let bNorm = 0;
+    for (const value of b) bNorm += value * value;
+    bNorm = Math.sqrt(bNorm);
+    // The stiff link has put five orders of magnitude into ‖b‖ that say nothing about
+    // how accurate the answer has to be.
+    expect(bNorm).toBeGreaterThan(1e8);
+
+    const scale = 10;
+    const scaled = conjugateGradient(matrix, b, {
+      tolerance: 1e-8,
+      referenceNorm: scale,
+      maxIterations: 5000,
+    });
+
+    expect(scaled.converged).toBe(true);
+    expect(scaled.residual).toBeLessThanOrEqual(1e-8 * scale);
+    // …and the reported relative residual is against that same scale, so it can still
+    // be read against the tolerance that was asked for.
+    expect(scaled.relativeResidual).toBeLessThanOrEqual(1e-8);
+  });
+
+  it('leaves an absolute residual set by ‖b‖ when no scale is supplied', () => {
+    // The default is unchanged, and this is why a caller with an inflated ‖b‖ needs the
+    // option: the same tolerance buys five orders of magnitude less absolute accuracy.
+    const { matrix, b } = stiffLinkChain(40, 1e6);
+    const relative = conjugateGradient(matrix, b, { tolerance: 1e-8, maxIterations: 5000 });
+    const scaled = conjugateGradient(matrix, b, {
+      tolerance: 1e-8,
+      referenceNorm: 10,
+      maxIterations: 5000,
+    });
+
+    expect(relative.converged).toBe(true);
+    expect(relative.residual).toBeGreaterThan(1e4 * scaled.residual);
+  });
+
+  it('falls back to ‖b‖ when the supplied scale is zero or absent', () => {
+    const n = 20;
+    const b = new Float64Array(n);
+    b[0] = 1;
+    const fallback = conjugateGradient(laplacian(n), b, { tolerance: 1e-12, referenceNorm: 0 });
+    const plain = conjugateGradient(laplacian(n), b, { tolerance: 1e-12 });
+    expect(fallback.iterations).toBe(plain.iterations);
+    expect(fallback.relativeResidual).toBe(plain.relativeResidual);
   });
 
   it('is preconditioned: badly scaled diagonals do not slow it down', () => {

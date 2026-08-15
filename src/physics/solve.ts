@@ -116,9 +116,14 @@ export function solveShell(
     loadPerDof = system.loadPerDof;
     fixedDof = system.fixed;
 
-    const { matrix, rhs } = applyFixedTemperatures(system);
+    const { matrix, rhs, appliedNorm } = applyFixedTemperatures(system);
+    // Judged against ‖rhs‖ instead, the tolerance would be measured on a scale a stiff
+    // contact sets rather than one the physics does, and the watts CG leaves behind —
+    // which are exactly what the heat balance reports as its residual — would grow with
+    // the joint's conductance instead of staying put.
     const cg = conjugateGradient(matrix, rhs, {
       tolerance: scenario.solver.cgTolerance,
+      referenceNorm: appliedNorm,
       maxIterations: scenario.solver.maxCgIterations,
       initialGuess: dofSolution,
     });

@@ -172,8 +172,17 @@ function sortRowByColumn(
 }
 
 export interface CgOptions {
-  /** Relative residual target, ‖r‖/‖b‖. */
+  /** Relative residual target, ‖r‖/‖referenceNorm‖. */
   tolerance?: number;
+  /**
+   * The scale ‖r‖ is judged against, in place of ‖b‖. Defaults to ‖b‖, which is the
+   * right answer only when ‖b‖ is set by the size of the problem. It is not when the
+   * caller has folded a constraint into b — eliminating a fixed value behind a very
+   * stiff link puts that stiffness into ‖b‖, and a target relative to it then buys
+   * orders of magnitude less absolute accuracy than the tolerance reads as. Such a
+   * caller passes the scale the answer actually has to be accurate to.
+   */
+  referenceNorm?: number;
   maxIterations?: number;
   initialGuess?: Float64Array;
 }
@@ -183,7 +192,7 @@ export interface CgResult {
   iterations: number;
   /** Final absolute residual ‖b − Ax‖₂. */
   residual: number;
-  /** Same residual relative to ‖b‖. */
+  /** Same residual relative to the reference norm — ‖b‖ unless the caller set one. */
   relativeResidual: number;
   converged: boolean;
 }
@@ -209,7 +218,9 @@ export function conjugateGradient(
   let bNorm = 0;
   for (let i = 0; i < n; i++) bNorm += b[i] * b[i];
   bNorm = Math.sqrt(bNorm);
-  const target = tolerance * (bNorm > 0 ? bNorm : 1);
+  const reference =
+    options.referenceNorm && options.referenceNorm > 0 ? options.referenceNorm : bNorm;
+  const target = tolerance * (reference > 0 ? reference : 1);
 
   const r = new Float64Array(n);
   matrix.multiply(x, r);
@@ -258,7 +269,7 @@ export function conjugateGradient(
     x,
     iterations,
     residual,
-    relativeResidual: bNorm > 0 ? residual / bNorm : residual,
+    relativeResidual: reference > 0 ? residual / reference : residual,
     converged: Number.isFinite(residual) && residual <= target,
   };
 }

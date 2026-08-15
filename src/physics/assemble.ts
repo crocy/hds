@@ -623,14 +623,28 @@ export function assembleSystem(
  * Symmetric row/column elimination of the fixed temperatures: zero the row and the
  * column, put 1 on the diagonal, and fold the known value into the free rows' RHS.
  * Keeps the system symmetric positive-definite, unlike a penalty term.
+ *
+ * `appliedNorm` is ‖rhs‖₂ *before* that folding. Every row is an equation in watts, so
+ * it is the scale of the power actually applied to the model — and unlike ‖rhs‖ after
+ * elimination it does not grow with contact conductance. Eliminating a node pinned at
+ * 473 K behind a 1e4 W/K joint writes 5e6 into its neighbour's row, which says nothing
+ * about how many watts the answer has to be right to. This is the scale the solver
+ * judges the CG residual against; see `CgOptions.referenceNorm`.
  */
 export function applyFixedTemperatures(system: AssembledSystem): {
   matrix: CsrMatrix;
   rhs: Float64Array;
+  appliedNorm: number;
 } {
   const matrix = system.matrix.clone();
   const rhs = Float64Array.from(system.rhs);
   const { rowPtr, colIndex, values } = matrix;
+
+  let appliedNorm = 0;
+  for (let row = 0; row < system.dofCount; row++) {
+    if (!system.fixed[row]) appliedNorm += rhs[row] * rhs[row];
+  }
+  appliedNorm = Math.sqrt(appliedNorm);
 
   for (let row = 0; row < system.dofCount; row++) {
     if (system.fixed[row]) {
@@ -648,5 +662,5 @@ export function applyFixedTemperatures(system: AssembledSystem): {
     }
   }
 
-  return { matrix, rhs };
+  return { matrix, rhs, appliedNorm };
 }
