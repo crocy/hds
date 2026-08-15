@@ -1,62 +1,23 @@
 /**
- * Default scenario values and the canonical material/finish ids that import
- * assigns before the user picks anything.
+ * Scenario defaults.
+ *
+ * Deliberately thin: material and finish ids live with the material library in
+ * `physics/materials`, cavity presets with `geometry/cavity`, and the sheet
+ * thinness threshold with `geometry/build`. Each constant has exactly one home,
+ * next to the code that gives it meaning.
  */
 
-import {
-  DEFAULT_SOLVER_SETTINGS,
-  type Cavity,
-  type CavityCondition,
-  type Scenario,
-  type Vec3,
-} from './types';
+import { celsiusToKelvin } from './units';
+import { DEFAULT_SOLVER_SETTINGS, type Scenario, type Vec3 } from './types';
 
-export const DEFAULT_MATERIAL_ID = 'ss304';
-export const DEFAULT_FINISH_ID = 'bare-metal';
-
-/** 1 mm — the sheet thickness of the reference TBTE housing. */
-export const DEFAULT_THICKNESS = 0.001;
-
-export const KELVIN_OFFSET = 273.15;
-
-/** Below this thinness ratio a part is guessed to be sheet rather than bulk. */
-export const SHEET_THINNESS_THRESHOLD = 0.3;
-
-/** Z-up, matching the STEP files CAD tools export and the prototype's camera. */
+/** Z-up, matching what CAD tools export and what the reference model assumes. */
 export const DEFAULT_GRAVITY: Vec3 = [0, 0, -1];
 
-interface CavityPreset {
-  /** Effective film coefficient for surfaces facing the cavity, W/(m²·K). */
-  h: number;
-  /** Reduced emissivity for the enclosure approximation. */
-  emissivity: number;
-  /** Conductivity of the fill, W/(m·K) — consumed by the 2D cut-plane solve. */
-  fillK: number;
-}
+export const DEFAULT_AMBIENT_C = 20;
 
-export const CAVITY_PRESETS: Record<CavityCondition, CavityPreset> = {
-  // Trapped air still moves, just far less than open air does.
-  stillAir: { h: 3, emissivity: 0.6, fillK: 0.026 },
-  insulated: { h: 0.5, emissivity: 0.2, fillK: 0.04 },
-  adiabatic: { h: 0, emissivity: 0, fillK: 0.0001 },
-};
-
-export function makeCavity(id: number, condition: CavityCondition, triCount: number): Cavity {
-  const preset = CAVITY_PRESETS[condition];
+export function createDefaultScenario(ambientC = DEFAULT_AMBIENT_C): Scenario {
   return {
-    id,
-    name: `cavity ${id}`,
-    condition,
-    h: preset.h,
-    emissivity: preset.emissivity,
-    fillK: preset.fillK,
-    triCount,
-  };
-}
-
-export function createDefaultScenario(ambientC = 20): Scenario {
-  return {
-    ambient: ambientC + KELVIN_OFFSET,
+    ambient: celsiusToKelvin(ambientC),
     gravity: DEFAULT_GRAVITY,
     partOverrides: {},
     boundaryConditions: [],
