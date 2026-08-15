@@ -110,6 +110,31 @@ export const SURFACE_FINISHES: readonly SurfaceFinish[] = [
 const MATERIALS_BY_ID = new Map(MATERIALS.map((material) => [material.id, material]));
 const FINISHES_BY_ID = new Map(SURFACE_FINISHES.map((finish) => [finish.id, finish]));
 
+/**
+ * User-defined materials and finishes, added at runtime by the UI.
+ *
+ * A `PartOverride` carries only an id, so every context that resolves a scenario has
+ * to know the same custom entries — the main thread registers them on load, and the
+ * solve worker registers the copies that travel with its request.
+ */
+const LIBRARY_MATERIAL_IDS: ReadonlySet<string> = new Set(MATERIALS.map((m) => m.id));
+const LIBRARY_FINISH_IDS: ReadonlySet<string> = new Set(SURFACE_FINISHES.map((f) => f.id));
+
+/** Registers a custom material, or replaces one registered earlier under the same id. */
+export function registerMaterial(material: Material): void {
+  if (LIBRARY_MATERIAL_IDS.has(material.id)) {
+    throw new Error(`'${material.id}' is a library material and cannot be redefined`);
+  }
+  MATERIALS_BY_ID.set(material.id, material);
+}
+
+export function registerFinish(finish: SurfaceFinish): void {
+  if (LIBRARY_FINISH_IDS.has(finish.id)) {
+    throw new Error(`'${finish.id}' is a library finish and cannot be redefined`);
+  }
+  FINISHES_BY_ID.set(finish.id, finish);
+}
+
 export class UnknownMaterialError extends Error {
   constructor(readonly materialId: string) {
     super(
