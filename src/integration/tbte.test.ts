@@ -12,6 +12,12 @@
  * actually contains, so it carries 7734 cm² — outer skin, inner skin and edge
  * bands — and the comparable figure is the loss from the skin that faces ambient,
  * not the total. The assertions below are written against that comparison.
+ *
+ * The two skins are merged onto one DOF per in-plane position wherever they can be
+ * paired, so the sheet conducts its full thickness in plane and is isothermal across
+ * it — see `pairThroughThickness`. Without that the inner skin is a near-lossless
+ * spreader that the heat from the block cannot leave, and the model reports 94.6 W
+ * against the 101.5 W it reports now.
  */
 
 import { readFileSync } from 'node:fs';
@@ -24,7 +30,8 @@ import { buildThermalModel } from '../geometry/build';
 import { detectCavities, setCavityCondition } from '../geometry/cavity';
 import { detectContacts } from '../geometry/contacts';
 import { solveShell } from '../physics/solve';
-import { resolveTargetNodes, surfaceCoefficients } from '../physics/assemble';
+import { pairThroughThickness, resolveTargetNodes, surfaceCoefficients } from '../physics/assemble';
+import { computeTriangleEmissivity, STEFAN_BOLTZMANN } from '../physics/radiation';
 import { analysePathLength } from '../analysis/pathLength';
 import { createDefaultScenario } from '../core/defaults';
 import { celsiusToKelvin, kelvinToCelsius } from '../core/units';
@@ -37,6 +44,10 @@ const STEP_PATH = fileURLToPath(new URL('../../ohisje - TBTE 2x116.step', import
 /**
  * Convection plus radiation from the triangles that face ambient — the part of the
  * model the mid-surface reference run is comparable to.
+ *
+ * Integrated per triangle corner, exactly as the solver assembles it and the balance
+ * reports it, so this is a partition of `lostByConvection + lostByRadiation` rather
+ * than a second, slightly different account of the same watts.
  */
 function lossThroughOpenAir(
   model: ThermalModel,
@@ -44,18 +55,21 @@ function lossThroughOpenAir(
   temperature: Float32Array,
 ): { watts: number; area: number; meanExcess: number } {
   const coefficients = surfaceCoefficients(model, scenario, temperature);
+  const emissivity = computeTriangleEmissivity(model, scenario);
   let watts = 0;
   let area = 0;
   let excessArea = 0;
   for (let t = 0; t < model.triCount; t++) {
     if (model.triCavity[t] > 0) continue;
-    const excess =
-      (temperature[model.tris[t * 3]] +
-        temperature[model.tris[t * 3 + 1]] +
-        temperature[model.tris[t * 3 + 2]]) /
-        3 -
-      scenario.ambient;
-    watts += (coefficients.hConv[t] + coefficients.hRad[t]) * model.triArea[t] * excess;
+    const share = model.triArea[t] / 3;
+    let excess = 0;
+    for (let corner = 0; corner < 3; corner++) {
+      const node = model.tris[t * 3 + corner];
+      excess += (temperature[node] - scenario.ambient) / 3;
+      watts +=
+        coefficients.hConv[t] * share * (temperature[node] - scenario.ambient) +
+        emissivity[t] * STEFAN_BOLTZMANN * share * (temperature[node] ** 4 - scenario.ambient ** 4);
+    }
     area += model.triArea[t];
     excessArea += model.triArea[t] * excess;
   }
@@ -161,6 +175,25 @@ describe('TBTE housing', () => {
       },
     ];
 
+    // A sheet solid's mesh carries both faces, and a 1 mm steel sheet is isothermal
+    // through its thickness (Bi = h·t/k ≈ 5e-4), so the two skins have to share a DOF.
+    // Edge bands, holes and the two parts whose walls are not 1 mm never pair, and are
+    // left as two half-thickness shells joined at their rims.
+    const opposite = pairThroughThickness(model, scenario);
+    let pairableNodes = 0;
+    let pairedNodes = 0;
+    for (const part of model.parts) {
+      if (part.bodyType !== 'sheet' || part.volume === 0) continue;
+      for (let node = part.nodeRange[0]; node < part.nodeRange[1]; node++) {
+        pairableNodes++;
+        if (opposite[node] >= 0) pairedNodes++;
+      }
+    }
+    console.log(
+      `through-thickness pairs: ${pairedNodes}/${pairableNodes} sheet-solid nodes` +
+        ` (${((100 * pairedNodes) / pairableNodes).toFixed(1)}%)`,
+    );
+
     const result = solveShell(model, scenario);
     const sourceNodes = resolveTargetNodes(model, { type: 'part', partId: block!.id });
     const path = analysePathLength(model, sourceNodes, result.temperature, {
@@ -200,6 +233,17 @@ describe('TBTE housing', () => {
     // Everything must sit between ambient and the driven temperature.
     expect(kelvinToCelsius(result.minTemp)).toBeGreaterThanOrEqual(19.9);
 
+    // Most of a real housing's skin pairs; the rest — edge bands, hole rims, the two
+    // parts whose walls are not the 1 mm this scenario declares — does not, and must
+    // not, because pairing through a wall that is not there would invent a sheet.
+    // Measured: 2858 of 4123 (69.3 %).
+    expect(pairedNodes / pairableNodes).toBeGreaterThan(0.6);
+    for (let node = 0; node < model.nodeCount; node++) {
+      const twin = opposite[node];
+      // One DOF means one temperature, bit for bit — not merely a small gradient.
+      if (twin >= 0) expect(result.temperature[node]).toBe(result.temperature[twin]);
+    }
+
     // Cavity detection has to find the inside of a sealed housing: inner skin, edge
     // bands and the parts buried in it are the majority of a sheet solid's area.
     expect(enclosedArea / totalArea).toBeGreaterThan(0.5);
@@ -211,11 +255,21 @@ describe('TBTE housing', () => {
     expect(totalArea - enclosedArea).toBeGreaterThan(REFERENCE_MESH_AREA * 0.9);
     expect(totalArea - enclosedArea).toBeLessThan(REFERENCE_MESH_AREA * 1.1);
 
-    // ...and the heat leaving that skin should match the reference's 61 W. The total
-    // is higher (~95 W) because our cavity-facing skin exists and the reference's does
-    // not: at the default 'insulated' condition it sheds another ~35 W that the
-    // reference model structurally cannot.
+    // ...and the heat leaving that skin should match the reference's 61 W. Measured
+    // 64.8 W. The total is higher (~102 W) because our cavity-facing skin exists and
+    // the reference's does not: at the default 'insulated' condition it sheds another
+    // ~37 W that the reference model structurally cannot.
     expect(exposed.watts).toBeGreaterThan(50);
     expect(exposed.watts).toBeLessThan(72);
+
+    // The balance closes far inside the solver's own 1 % alarm. What is left (~0.05 W,
+    // 5e-4 of the loss) is the contact terms: the flux across a PERFECT_CONTACT joint
+    // is conductance × a ΔT of order the Float32Array field's own resolution, so the
+    // balance cannot recover it as precisely as the matrix imposed it. Radiation
+    // contributes nothing — it is linearised per node, so the two accounts of it are
+    // the same number by algebra.
+    const loss = result.balance.lostByConvection + result.balance.lostByRadiation;
+    expect(Math.abs(result.balance.residual) / loss).toBeLessThan(2e-3);
+    expect(result.warnings.join('\n')).not.toContain('Energy balance');
   }, 120_000);
 });

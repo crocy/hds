@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { finModel, modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
+import { finModel, mergeMeshes, modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
 import { DEFAULT_SOLVER_SETTINGS } from '../core/types';
 import type {
   BoundaryCondition,
@@ -70,10 +70,9 @@ function totalArea(model: ThermalModel): number {
  * out. The tolerance is far tighter than the solver's own warning threshold — a
  * balance that only just closes is already telling us something is wrong.
  *
- * Radiating models need a looser bound than 1e-4 on a coarse mesh: the matrix
- * linearises h_rad at each triangle's mean temperature while the balance integrates
- * Stefan–Boltzmann at each node's, and the two differ by O(dx²). See
- * 'the energy residual is a mesh artefact' below, which pins that rate.
+ * Radiating models are held to the same bound as the rest: h_rad is linearised per
+ * node, so h_rad·(T − T∞) and εσ(T⁴ − T∞⁴) are the same number by algebra rather than
+ * to O(dx²). See 'closes to float32 noise at every mesh density' below.
  */
 function expectEnergyConserved(result: SolveResult, relative = 1e-4): void {
   const throughput = heatThroughput(result.balance);
@@ -161,6 +160,102 @@ describe('1D fin benchmark', () => {
       expect(result.temperature[node]).toBeLessThanOrEqual(tHot + 1e-6);
       expect(result.temperature[node]).toBeGreaterThanOrEqual(AMBIENT - 1e-6);
     }
+  });
+});
+
+describe('sheet solid benchmark', () => {
+  // The same 1D fin, but meshed the way CAD hands over a sheet-metal part: a solid, so
+  // the mesh carries both faces. Each face conducts t/2 and convects on its own, and the
+  // two are merged onto one DOF per in-plane position because Bi = h·t/k ≈ 7e-4 makes a
+  // 1 mm steel sheet isothermal through its thickness.
+  //
+  // The films are deliberately lopsided — one face open to air, the other a sealed
+  // cavity wall — and the drive touches the cavity face only. That is the case the
+  // merge exists for: without it the heat entering the inner skin can only spread
+  // through k·t/2 and can never reach the open face at all, which is a different
+  // physical object from the sheet the CAD describes.
+  const length = 0.15;
+  const width = 0.02;
+  const nx = 60;
+  const hOpen = 10;
+  const hCavity = 0;
+  const tHot = 400;
+
+  /** Two plates a thickness apart, normals back to back. Face 0 is −z, face 1 is +z. */
+  function slabFin(): ThermalModel {
+    const cavitySide = stripMesh(length, width, nx, 1, 0, 0);
+    for (let t = 0; t * 3 < cavitySide.indices.length; t++) {
+      const swap = cavitySide.indices[t * 3 + 1];
+      cavitySide.indices[t * 3 + 1] = cavitySide.indices[t * 3 + 2];
+      cavitySide.indices[t * 3 + 2] = swap;
+    }
+    const openSide = stripMesh(length, width, nx, 1, 0, 1, [0, 0, SHEET_THICKNESS]);
+    const model = modelFromMesh(mergeMeshes(cavitySide, openSide), [
+      { thickness: SHEET_THICKNESS, finishId: 'no-radiation' },
+    ]);
+    return { ...model, parts: [{ ...model.parts[0], volume: length * width * SHEET_THICKNESS }] };
+  }
+
+  function solveSlab() {
+    const model = slabFin();
+    const [a, b] = leftEdgeNodes(nx);
+    const scenario = scenarioWith({
+      partOverrides: { 'part-0': { finishId: 'no-radiation' } },
+      boundaryConditions: [
+        {
+          id: 'cavity-face',
+          kind: 'convection',
+          target: { type: 'face', partId: 'part-0', faceId: 0 },
+          h: hCavity,
+          enabled: true,
+        },
+        {
+          id: 'open-face',
+          kind: 'convection',
+          target: { type: 'face', partId: 'part-0', faceId: 1 },
+          h: hOpen,
+          enabled: true,
+        },
+        fixedTemp('hot-a', 'part-0', a, tHot),
+        fixedTemp('hot-b', 'part-0', b, tHot),
+      ],
+    });
+    return { model, result: solveShell(model, scenario) };
+  }
+
+  it('carries the full-thickness fin heat rate whichever face the heat enters', () => {
+    const { result } = solveSlab();
+    // Cross-section w·t, loss w·(h_open + h_cavity) per unit length: the one fin the
+    // real sheet is. Reading the mesh as two shells that never meet would give
+    // √((h/2)·k·t/2)·… — 41 % low, and on the open face 100 % low.
+    const m = Math.sqrt((hOpen + hCavity) / (SS304_K * SHEET_THICKNESS));
+    const analytic =
+      width *
+      Math.sqrt((hOpen + hCavity) * SS304_K * SHEET_THICKNESS) *
+      (tHot - AMBIENT) *
+      Math.tanh(m * length);
+    expect(analytic).toBeCloseTo(0.77136, 5);
+
+    expect(Math.abs(result.balance.injectedAtFixed / analytic - 1)).toBeLessThan(2e-3);
+    expectEnergyConserved(result);
+  });
+
+  it('holds the two faces at one temperature, which is what Bi ≪ 1 means', () => {
+    const { model, result } = solveSlab();
+    const perColumn = new Map<number, number[]>();
+    for (let node = 0; node < model.nodeCount; node++) {
+      const x = Math.round(model.nodes[node * 3] * 1e6);
+      const y = Math.round(model.nodes[node * 3 + 1] * 1e6);
+      const key = x * 1e6 + y;
+      perColumn.set(key, [...(perColumn.get(key) ?? []), result.temperature[node]]);
+    }
+    for (const temperatures of perColumn.values()) {
+      expect(temperatures).toHaveLength(2);
+      expect(temperatures[0]).toBe(temperatures[1]);
+    }
+    // …and the open face really is being fed, rather than sitting at ambient as it
+    // would if the two shells were only joined around the rim.
+    expect(result.minTemp).toBeGreaterThan(AMBIENT + 1);
   });
 });
 
@@ -388,19 +483,26 @@ describe('energy accounting', () => {
     return Math.abs(result.balance.residual) / heatThroughput(result.balance);
   }
 
-  it('leaves a residual that is a mesh artefact, and halves with dx²', () => {
-    // The matrix linearises h_rad at each triangle's mean temperature; the balance
-    // integrates σ(T⁴ − T∞⁴) at each node's. They differ by O(dx²) and by nothing
-    // else — if the two accounts of a watt ever diverge for a different reason, this
-    // rate is what breaks. Measured: 2.0e-3 → 5.7e-4 → 1.5e-4 for nx = 40 → 80 → 160.
-    const coarse = relativeResidualAt(40);
-    const medium = relativeResidualAt(80);
-    const fine = relativeResidualAt(160);
+  /**
+   * All that is left of the residual once radiation is linearised per node: the
+   * balance reads its field back out of a Float32Array, and 24-bit temperatures near
+   * 600 K cannot account for watts more finely than this. It is a property of the
+   * field's storage, not of the mesh.
+   */
+  const FLOAT32_FIELD_NOISE = 5e-5;
 
-    expect(coarse).toBeLessThan(3e-3);
-    expect(fine).toBeLessThan(3e-4);
-    expect(coarse / medium).toBeGreaterThan(3);
-    expect(medium / fine).toBeGreaterThan(3);
+  it('closes to float32 noise at every mesh density, with no dx² tail left', () => {
+    // h_rad is linearised at each node's own temperature — the same temperature the
+    // balance takes (T − T∞) at — so h_rad·(T − T∞) = εσ(T⁴ − T∞⁴) is an algebraic
+    // identity and the two accounts of a watt cannot disagree by construction.
+    // Measured: 8.7e-6, 3.7e-7, 5.8e-7, 5.4e-8, 7.4e-7 for nx = 10 … 160, sign
+    // random and with no ordering by mesh size. Linearising at each triangle's mean
+    // corner temperature instead gave 2.0e-3 → 5.7e-4 → 1.5e-4 for nx = 40 → 160:
+    // an O(dx²) discrepancy, always negative because T⁴ is convex, that only
+    // refinement could shrink and that no refinement could take this far down.
+    for (const nx of [10, 20, 40, 80, 160]) {
+      expect(relativeResidualAt(nx)).toBeLessThan(FLOAT32_FIELD_NOISE);
+    }
   });
 
   it('warns loudly rather than hiding a balance that does not close', () => {
@@ -531,7 +633,7 @@ describe('outer loop', () => {
     for (let node = 0; node < model.nodeCount; node++) {
       expect(warm.temperature[node]).toBeCloseTo(cold.temperature[node], 3);
     }
-    expectEnergyConserved(warm, 2e-3);
+    expectEnergyConserved(warm);
   });
 
   it('ignores a stale previous field of the wrong length', () => {
@@ -558,6 +660,6 @@ describe('outer loop', () => {
     const result = await shellSolver.solve(model, scenario);
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
     expect(result.outerIterations).toBeGreaterThan(0);
-    expectEnergyConserved(result, 2e-3);
+    expectEnergyConserved(result);
   });
 });

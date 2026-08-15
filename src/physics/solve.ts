@@ -28,7 +28,6 @@ import {
   type SurfaceCoefficients,
 } from './assemble';
 import { resolvePart } from './materials';
-import { radiationCoefficient } from './radiation';
 import { conjugateGradient } from './sparse';
 
 /**
@@ -144,13 +143,12 @@ export function solveShell(
     );
   }
 
-  const surface = nodeSurfaceProperties(model, coefficients, coefficientTemperature, scenario);
   const balance = computeHeatBalance({
     model,
     scenario,
     temperature,
-    hConvection: surface.hConvection,
-    emissivity: surface.emissivity,
+    hConvection: nodeConvectionCoefficients(model, coefficients.hConv),
+    emissivity: coefficients.emissivity,
     conduction: conductionEdges(model, scenario, dofs),
     fixedNodes: fixedNodeList(model, dofs, fixedDof),
     nodeLoad: nodeLoads(model, dofs, loadPerDof),
@@ -243,56 +241,27 @@ function solvedExtent(
   return Number.isFinite(min) ? { min, max } : { min: ambient, max: ambient };
 }
 
-interface NodeSurfaceProperties {
-  hConvection: Float64Array;
-  emissivity: Float64Array;
-}
-
 /**
- * Per-node film coefficient and effective emissivity, area-weighted from the
- * per-triangle values.
+ * Per-node film coefficient, area-weighted from the per-triangle values.
  *
  * The assembly spreads h·A_t/3 to each corner while the balance integrates h·nodeArea,
  * so the area-weighted mean is the one choice that makes the two agree exactly.
- * Emissivity is recovered by dividing the linearised h_rad by its ε = 1 value rather
- * than re-deriving finish/cavity/insulator precedence, which belongs to radiation.ts.
+ * Radiation needs no such step: its coefficient and its emissivity are already per node.
  */
-function nodeSurfaceProperties(
-  model: ThermalModel,
-  coefficients: SurfaceCoefficients,
-  coefficientTemperature: Float32Array,
-  scenario: Scenario,
-): NodeSurfaceProperties {
+function nodeConvectionCoefficients(model: ThermalModel, hConv: Float32Array): Float64Array {
   const hConvection = new Float64Array(model.nodeCount);
-  const emissivity = new Float64Array(model.nodeCount);
-
   for (let t = 0; t < model.triCount; t++) {
-    const a = model.tris[t * 3];
-    const b = model.tris[t * 3 + 1];
-    const c = model.tris[t * 3 + 2];
-    const share = model.triArea[t] / 3;
-    const surfaceT =
-      (coefficientTemperature[a] + coefficientTemperature[b] + coefficientTemperature[c]) / 3;
-    const unitRadiation = radiationCoefficient(1, surfaceT, scenario.ambient);
-    const effectiveEmissivity = unitRadiation > 0 ? coefficients.hRad[t] / unitRadiation : 0;
-    for (let corner = 0; corner < 3; corner++) {
-      const node = model.tris[t * 3 + corner];
-      hConvection[node] += coefficients.hConv[t] * share;
-      emissivity[node] += effectiveEmissivity * share;
-    }
+    const share = (hConv[t] * model.triArea[t]) / 3;
+    if (share === 0) continue;
+    hConvection[model.tris[t * 3]] += share;
+    hConvection[model.tris[t * 3 + 1]] += share;
+    hConvection[model.tris[t * 3 + 2]] += share;
   }
-
   for (let node = 0; node < model.nodeCount; node++) {
     const area = model.nodeArea[node];
-    if (area > 0) {
-      hConvection[node] /= area;
-      emissivity[node] /= area;
-    } else {
-      hConvection[node] = 0;
-      emissivity[node] = 0;
-    }
+    hConvection[node] = area > 0 ? hConvection[node] / area : 0;
   }
-  return { hConvection, emissivity };
+  return hConvection;
 }
 
 /**

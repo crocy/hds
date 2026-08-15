@@ -3,9 +3,16 @@
  *
  * The standalone, recomputable version: a pure function of a temperature field
  * and the coefficients that produced it, so the UI can re-report a balance (or a
- * what-if) without re-entering the solver. Radiation is evaluated from the full
- * Stefan–Boltzmann law rather than the solver's linearised h_rad; the two agree
- * exactly at convergence because h_rad is defined to make them agree.
+ * what-if) without re-entering the solver.
+ *
+ * Radiation is evaluated from the full Stefan–Boltzmann law rather than the
+ * solver's linearised h_rad, and the two agree to the last bit rather than
+ * approximately, because the solver linearises **per node**:
+ *   h_rad(T)·(T − T∞) = εσ(T² + T∞²)(T + T∞)(T − T∞) = εσ(T⁴ − T∞⁴)
+ * is an algebraic identity whenever the coefficient was built from the same T the
+ * difference is taken at. So this is a genuine independent check of the assembly —
+ * a non-zero residual means a real disagreement about watts, never a linearisation
+ * artefact of the mesh.
  */
 
 import type { Contact, HeatBalance, Scenario, ThermalModel } from '../core/types';

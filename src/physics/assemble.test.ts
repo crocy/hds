@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
+import { mergeMeshes, modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
 import { DEFAULT_SOLVER_SETTINGS } from '../core/types';
 import type { BoundaryCondition, Part, Scenario, ThermalModel } from '../core/types';
 import {
@@ -16,6 +16,7 @@ import {
   conductionThickness,
   convectionOverrides,
   cotangentWeights,
+  pairThroughThickness,
   partIndexOf,
   resolveTargetNodes,
   resolveTargetTriangles,
@@ -174,6 +175,145 @@ describe('buildDofMap', () => {
     const part1Nodes = Array.from(model.nodePart).filter((part) => part === 1).length;
     expect(dofs.dofCount).toBe(1 + part1Nodes);
     expect(dofs.dofPart[0]).toBe(0);
+  });
+});
+
+/**
+ * A sheet **solid**: two plates a thickness apart with their normals back to back, the
+ * way a tessellated sheet-metal part arrives. Face 0 is the −z plate, face 1 the +z one.
+ * `volume` is what marks the mesh as closed, and it is the only thing the pairing and
+ * `conductionThickness` read to tell a solid from a mid-surface.
+ */
+function slabMesh(length: number, width: number, thickness: number, nx: number, topNx = nx) {
+  const bottom = stripMesh(length, width, nx, 1, 0, 0);
+  // Reverse the winding so the lower plate's normal points −z, away from the upper one.
+  for (let t = 0; t * 3 < bottom.indices.length; t++) {
+    const swap = bottom.indices[t * 3 + 1];
+    bottom.indices[t * 3 + 1] = bottom.indices[t * 3 + 2];
+    bottom.indices[t * 3 + 2] = swap;
+  }
+  const top = stripMesh((length * topNx) / nx, width, topNx, 1, 0, 1, [0, 0, thickness]);
+  return mergeMeshes(bottom, top);
+}
+
+function slabModel(length: number, width: number, thickness: number, nx: number, topNx = nx) {
+  const model = modelFromMesh(slabMesh(length, width, thickness, nx, topNx), [{ thickness }]);
+  return { ...model, parts: [{ ...model.parts[0], volume: length * width * thickness }] };
+}
+
+describe('pairThroughThickness', () => {
+  const length = 0.1;
+  const width = 0.02;
+  const thickness = 0.001;
+  const nx = 10;
+
+  it('matches every node with the one directly opposite it through the sheet', () => {
+    const model = slabModel(length, width, thickness, nx);
+    const opposite = pairThroughThickness(model, scenarioWith());
+
+    let pairs = 0;
+    for (let node = 0; node < model.nodeCount; node++) {
+      const twin = opposite[node];
+      expect(twin).toBeGreaterThanOrEqual(0);
+      // Same in-plane position, one thickness away, and the pairing is an involution.
+      expect(model.nodes[twin * 3]).toBeCloseTo(model.nodes[node * 3], 9);
+      expect(model.nodes[twin * 3 + 1]).toBeCloseTo(model.nodes[node * 3 + 1], 9);
+      expect(Math.abs(model.nodes[twin * 3 + 2] - model.nodes[node * 3 + 2])).toBeCloseTo(
+        thickness,
+        9,
+      );
+      expect(opposite[twin]).toBe(node);
+      pairs++;
+    }
+    expect(pairs).toBe(model.nodeCount);
+  });
+
+  it('puts both faces of a pair on one DOF, halving the count', () => {
+    const model = slabModel(length, width, thickness, nx);
+    const opposite = pairThroughThickness(model, scenarioWith());
+    const dofs = buildDofMap(model, scenarioWith());
+
+    expect(dofs.dofCount).toBe(model.nodeCount / 2);
+    for (let node = 0; node < model.nodeCount; node++) {
+      expect(dofs.nodeDof[node]).toBe(dofs.nodeDof[opposite[node]]);
+      expect(dofs.dofPart[dofs.nodeDof[node]]).toBe(0);
+    }
+  });
+
+  it('leaves an open shell alone, because a mid-surface mesh has no second face', () => {
+    // Same geometry, `volume` 0: the mesh is now claiming to be a mid-surface, and
+    // pairing its two plates would merge two genuinely separate walls.
+    const solid = slabModel(length, width, thickness, nx);
+    const openShell = { ...solid, parts: [{ ...solid.parts[0], volume: 0 }] };
+    expect(Array.from(pairThroughThickness(openShell, scenarioWith()))).toEqual(
+      new Array(openShell.nodeCount).fill(-1),
+    );
+    expect(buildDofMap(openShell, scenarioWith()).dofCount).toBe(openShell.nodeCount);
+  });
+
+  it('refuses to pair through a wall that is not the thickness it was told', () => {
+    // The plates are 1 mm apart; the scenario says the sheet is 5 mm. Pairing them
+    // anyway would silently model a wall the CAD does not contain.
+    const model = slabModel(length, width, thickness, nx);
+    const scenario = scenarioWith({ partOverrides: { 'part-0': { thickness: 0.005 } } });
+    expect(pairThroughThickness(model, scenario).some((twin) => twin >= 0)).toBe(false);
+    expect(buildDofMap(model, scenario).dofCount).toBe(model.nodeCount);
+  });
+
+  it('pairs what it can and leaves the rest as they were', () => {
+    // The upper plate covers only the first half of the lower one — the shape of every
+    // real housing, where edge bands, holes and cut-outs never all pair.
+    const model = slabModel(length, width, thickness, nx, nx / 2);
+    const opposite = pairThroughThickness(model, scenarioWith());
+    const dofs = buildDofMap(model, scenarioWith());
+
+    let pairs = 0;
+    for (let node = 0; node < model.nodeCount; node++) if (opposite[node] > node) pairs++;
+    expect(pairs).toBe(nx + 2); // every node of the shorter upper plate
+    expect(dofs.dofCount).toBe(model.nodeCount - pairs);
+
+    // Unpaired nodes keep a DOF of their own; paired ones share.
+    const seen = new Map<number, number>();
+    for (let node = 0; node < model.nodeCount; node++) {
+      seen.set(dofs.nodeDof[node], (seen.get(dofs.nodeDof[node]) ?? 0) + 1);
+    }
+    for (let node = 0; node < model.nodeCount; node++) {
+      expect(seen.get(dofs.nodeDof[node])).toBe(opposite[node] >= 0 ? 2 : 1);
+    }
+  });
+
+  it('does not pair a lump or an insulator, which have no per-face DOFs to merge', () => {
+    const model = slabModel(length, width, thickness, nx);
+    for (const bodyType of ['lump', 'insulator'] as const) {
+      const scenario = scenarioWith({ partOverrides: { 'part-0': { bodyType } } });
+      expect(pairThroughThickness(model, scenario).some((twin) => twin >= 0)).toBe(false);
+    }
+  });
+
+  it('sums the two half-thickness shells back to the full thickness in plane', () => {
+    // The point of the merge: each face conducts k·t/2, and once they share a DOF the
+    // two cotangent stencils land in the same equation.
+    const model = slabModel(length, width, thickness, nx);
+    const scenario = bareConduction(['part-0']);
+    const dofs = buildDofMap(model, scenario);
+    const merged = assembleSystem(
+      model,
+      scenario,
+      dofs,
+      surfaceCoefficients(model, scenario, ambientField(model)),
+    );
+
+    const midSurface = modelFromMesh(stripMesh(length, width, nx, 1), [{ thickness }]);
+    const midDofs = buildDofMap(midSurface, scenario);
+    const single = assembleSystem(
+      midSurface,
+      scenario,
+      midDofs,
+      surfaceCoefficients(midSurface, scenario, ambientField(midSurface)),
+    );
+
+    expect(merged.matrix.get(0, 1)).toBeCloseTo(single.matrix.get(0, 1), 12);
+    expect(merged.matrix.get(0, 1)).toBeLessThan(0);
   });
 });
 
