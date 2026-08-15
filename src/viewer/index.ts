@@ -31,6 +31,7 @@ export {
 } from './scene';
 export type {
   CameraView,
+  HoverEvent,
   ResolvedColorScale,
   ThermalSceneHandlers,
   ThermalSceneOptions,

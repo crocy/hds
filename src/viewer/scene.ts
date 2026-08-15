@@ -195,9 +195,17 @@ export interface ResolvedColorScale {
   map: ColormapId;
 }
 
+/** What is under the pointer, plus where the pointer is, for the floating readout. */
+export interface HoverEvent {
+  hit: PickHit | null;
+  /** Client coordinates, in CSS pixels. */
+  x: number;
+  y: number;
+}
+
 export interface ThermalSceneHandlers {
-  /** Fires at most once per animation frame while the pointer moves over the canvas. */
-  onHover?(hit: PickHit | null, pointer: { x: number; y: number }): void;
+  /** Fires at most once per animation frame while the pointer moves; null on leave. */
+  onHover?(hover: HoverEvent | null): void;
   onSelectionChange?(selection: Target[], hit: PickHit | null): void;
   /** Fires on every gizmo drag step; the field the caller supplied is dropped as it moves. */
   onSectionPlaneChange?(plane: SectionPlane): void;
@@ -265,6 +273,8 @@ export class ThermalScene {
     target: [0, 0, 0],
   };
   private zoomLimits: ZoomLimits = { min: 0.05, max: 20 };
+  /** True while the view is still the automatic framing, so a resize may re-frame. */
+  private viewIsFramed = false;
 
   private pointerMode: PointerMode = 'none';
   private pointerId: number | null = null;
@@ -623,6 +633,7 @@ export class ThermalScene {
     this.zoomLimits = zoomLimitsFor(bounds);
     this.view = frameBounds(bounds, this.camera.fov, this.width / this.height);
     this.updateCameraClipping(bounds);
+    this.viewIsFramed = true;
     this.applyView();
     this.emitCameraChange();
   }
@@ -633,6 +644,7 @@ export class ThermalScene {
 
   setCameraView(view: CameraView): void {
     this.view = { ...view, target: [...view.target] as Vec3 };
+    this.viewIsFramed = false;
     this.applyView();
   }
 
@@ -733,6 +745,9 @@ export class ThermalScene {
     this.camera.position.set(x, y, z);
     this.camera.up.set(0, 0, 1);
     this.camera.lookAt(this.view.target[0], this.view.target[1], this.view.target[2]);
+    // Picking rays are built from matrixWorld, and a pick can land in the same frame
+    // as a camera move, before the renderer would have refreshed it.
+    this.camera.updateMatrixWorld();
     this.invalidate();
   }
 
@@ -753,6 +768,9 @@ export class ThermalScene {
     renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    // A model loaded before the container had a size was framed for the wrong
+    // aspect; re-frame until the user takes the camera over.
+    if (this.viewIsFramed) this.resetView();
     this.invalidate();
   }
 
@@ -772,7 +790,7 @@ export class ThermalScene {
     const ndc = this.toNdc(pointer.x, pointer.y);
     const hit = this.picker.hover(ndc.x, ndc.y, this.height);
     this.invalidate();
-    this.handlers.onHover?.(hit, pointer);
+    this.handlers.onHover?.({ hit, x: pointer.x, y: pointer.y });
   }
 
   private toNdc(clientX: number, clientY: number): { x: number; y: number } {
@@ -832,6 +850,7 @@ export class ThermalScene {
     const dy = event.clientY - this.lastPointer.y;
     this.lastPointer = { x: event.clientX, y: event.clientY };
     this.pointerTravel += Math.abs(dx) + Math.abs(dy);
+    if (this.pointerMode !== 'section') this.viewIsFramed = false;
 
     switch (this.pointerMode) {
       case 'orbit':
@@ -875,11 +894,12 @@ export class ThermalScene {
     this.hoverPointer = null;
     this.picker.clearHover();
     this.invalidate();
-    this.handlers.onHover?.(null, { x: 0, y: 0 });
+    this.handlers.onHover?.(null);
   };
 
   private readonly onWheel = (event: WheelEvent): void => {
     event.preventDefault();
+    this.viewIsFramed = false;
     this.view = zoomView(this.view, event.deltaY, this.zoomLimits);
     this.applyView();
     this.emitCameraChange();

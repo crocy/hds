@@ -111,9 +111,11 @@ export function boundaryConditionGeometry(
   for (const condition of conditions) {
     if (condition.kind !== kind || !condition.enabled) continue;
     const resolved = resolveTarget(model, condition.target);
-    for (const tri of resolved.triangles) out.triangles.push(tri);
+    // One marker per target: a patch for part and face targets, a polyline for an
+    // edge, a point for a node. Drawing a part's nodes as well would just fog it.
     if (condition.target.type === 'edge') out.paths.push(resolved.nodes);
-    for (const node of resolved.nodes) out.nodes.push(node);
+    else if (condition.target.type === 'node') out.nodes.push(...resolved.nodes);
+    else for (const tri of resolved.triangles) out.triangles.push(tri);
   }
   return out;
 }
@@ -176,17 +178,50 @@ const OVERLAY_STYLES: Record<OverlayKind, LayerStyle> = {
 };
 
 /**
+ * One drawable — faces, lines or points — over a shared position buffer. The
+ * index array only ever grows: three keeps no reference to a replaced index
+ * attribute, so swapping one in on every rebuild strands its GPU buffer.
+ */
+class IndexedDraw {
+  private indices = new Uint32Array(0);
+
+  constructor(
+    readonly geometry: THREE.BufferGeometry,
+    readonly object: THREE.Object3D,
+  ) {}
+
+  write(count: number, fill: (out: Uint32Array) => void): void {
+    if (count === 0) {
+      this.object.visible = false;
+      return;
+    }
+    if (this.indices.length < count) {
+      this.indices = new Uint32Array(nextCapacity(count));
+      this.geometry.setIndex(new THREE.BufferAttribute(this.indices, 1));
+    }
+    fill(this.indices);
+    const index = this.geometry.getIndex();
+    if (index) index.needsUpdate = true;
+    this.geometry.setDrawRange(0, count);
+    this.object.visible = true;
+  }
+}
+
+function nextCapacity(needed: number): number {
+  let capacity = 256;
+  while (capacity < needed) capacity *= 2;
+  return capacity;
+}
+
+/**
  * Faces, polylines and points in one colour, all indexing the mesh's own position
  * buffer so nothing is copied and the overlay can never drift from the geometry.
  */
 class MarkerLayer {
   readonly group = new THREE.Group();
-  private readonly faces: THREE.Mesh;
-  private readonly lines: THREE.LineSegments;
-  private readonly points: THREE.Points;
-  private readonly faceGeometry = new THREE.BufferGeometry();
-  private readonly lineGeometry = new THREE.BufferGeometry();
-  private readonly pointGeometry = new THREE.BufferGeometry();
+  private readonly faces: IndexedDraw;
+  private readonly lines: IndexedDraw;
+  private readonly points: IndexedDraw;
 
   constructor(style: LayerStyle) {
     const faceMaterial = new THREE.MeshBasicMaterial({
@@ -218,81 +253,69 @@ class MarkerLayer {
       toneMapped: false,
     });
 
-    this.faces = new THREE.Mesh(this.faceGeometry, faceMaterial);
-    this.lines = new THREE.LineSegments(this.lineGeometry, lineMaterial);
-    this.points = new THREE.Points(this.pointGeometry, pointMaterial);
-    for (const object of [this.faces, this.lines, this.points]) {
-      object.renderOrder = 2;
-      object.frustumCulled = false;
-      object.visible = false;
-      this.group.add(object);
+    const faceGeometry = new THREE.BufferGeometry();
+    const lineGeometry = new THREE.BufferGeometry();
+    const pointGeometry = new THREE.BufferGeometry();
+    this.faces = new IndexedDraw(faceGeometry, new THREE.Mesh(faceGeometry, faceMaterial));
+    this.lines = new IndexedDraw(lineGeometry, new THREE.LineSegments(lineGeometry, lineMaterial));
+    this.points = new IndexedDraw(pointGeometry, new THREE.Points(pointGeometry, pointMaterial));
+    for (const draw of this.draws) {
+      draw.object.renderOrder = 2;
+      draw.object.frustumCulled = false;
+      draw.object.visible = false;
+      this.group.add(draw.object);
     }
   }
 
+  private get draws(): IndexedDraw[] {
+    return [this.faces, this.lines, this.points];
+  }
+
   get materials(): THREE.Material[] {
-    return [this.faces, this.lines, this.points].map((object) => object.material as THREE.Material);
+    return this.draws.map((draw) => (draw.object as THREE.Mesh).material as THREE.Material);
   }
 
   setPositionSource(attribute: THREE.BufferAttribute | null): void {
-    for (const geometry of [this.faceGeometry, this.lineGeometry, this.pointGeometry]) {
-      if (attribute) geometry.setAttribute('position', attribute);
-      else geometry.deleteAttribute('position');
+    for (const draw of this.draws) {
+      if (attribute) draw.geometry.setAttribute('position', attribute);
+      else draw.geometry.deleteAttribute('position');
     }
   }
 
   setTriangles(model: ThermalModel, triangles: ArrayLike<number>): void {
-    if (triangles.length === 0) {
-      this.faces.visible = false;
-      return;
-    }
-    const indices = new Uint32Array(triangles.length * 3);
-    for (let i = 0; i < triangles.length; i++) {
-      const t = triangles[i];
-      indices[i * 3] = model.tris[t * 3];
-      indices[i * 3 + 1] = model.tris[t * 3 + 1];
-      indices[i * 3 + 2] = model.tris[t * 3 + 2];
-    }
-    this.faceGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
-    this.faceGeometry.setDrawRange(0, indices.length);
-    this.faces.visible = true;
+    this.faces.write(triangles.length * 3, (out) => {
+      for (let i = 0; i < triangles.length; i++) {
+        const t = triangles[i];
+        out[i * 3] = model.tris[t * 3];
+        out[i * 3 + 1] = model.tris[t * 3 + 1];
+        out[i * 3 + 2] = model.tris[t * 3 + 2];
+      }
+    });
   }
 
   /** `paths` are node-index runs; consecutive pairs become segments. */
   setPaths(paths: readonly ArrayLike<number>[]): void {
     let count = 0;
     for (const path of paths) count += Math.max(0, path.length - 1) * 2;
-    if (count === 0) {
-      this.lines.visible = false;
-      return;
-    }
-    const indices = new Uint32Array(count);
-    let cursor = 0;
-    for (const path of paths) {
-      for (let i = 0; i + 1 < path.length; i++) {
-        indices[cursor++] = path[i];
-        indices[cursor++] = path[i + 1];
+    this.lines.write(count, (out) => {
+      let cursor = 0;
+      for (const path of paths) {
+        for (let i = 0; i + 1 < path.length; i++) {
+          out[cursor++] = path[i];
+          out[cursor++] = path[i + 1];
+        }
       }
-    }
-    this.lineGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
-    this.lineGeometry.setDrawRange(0, count);
-    this.lines.visible = true;
+    });
   }
 
   setNodes(nodes: ArrayLike<number>): void {
-    if (nodes.length === 0) {
-      this.points.visible = false;
-      return;
-    }
-    const indices = Uint32Array.from(nodes);
-    this.pointGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
-    this.pointGeometry.setDrawRange(0, indices.length);
-    this.points.visible = true;
+    this.points.write(nodes.length, (out) => {
+      for (let i = 0; i < nodes.length; i++) out[i] = nodes[i];
+    });
   }
 
   clear(): void {
-    this.faces.visible = false;
-    this.lines.visible = false;
-    this.points.visible = false;
+    for (const draw of this.draws) draw.object.visible = false;
   }
 
   setClippingPlanes(planes: THREE.Plane[] | null): void {
@@ -306,10 +329,8 @@ class MarkerLayer {
     // The position attribute belongs to the mesh; drop it before disposing these
     // geometries or the shared GPU buffer goes with them.
     this.setPositionSource(null);
-    for (const geometry of [this.faceGeometry, this.lineGeometry, this.pointGeometry]) {
-      geometry.dispose();
-    }
     for (const material of this.materials) material.dispose();
+    for (const draw of this.draws) draw.geometry.dispose();
     this.group.clear();
   }
 }
@@ -345,6 +366,9 @@ export class Overlays {
 
   setModel(model: ThermalModel | null, positions: THREE.BufferAttribute | null): void {
     this.model = model;
+    // A scenario belongs to the model it was built against; its part ids mean
+    // nothing here until the caller supplies the matching one.
+    this.scenario = null;
     this.lastContacts = null;
     this.lastConditions = null;
     for (const [kind, layer] of this.layers) {
@@ -442,9 +466,7 @@ export class Overlays {
         );
         layer.setTriangles(model, geometry.triangles);
         layer.setPaths(geometry.paths);
-        // Faces already read as a patch; drawing every node of a whole part on top
-        // would just be a fog of dots, so points mark the small targets only.
-        layer.setNodes(geometry.triangles.length > 0 ? [] : geometry.nodes);
+        layer.setNodes(geometry.nodes);
         break;
       }
       case 'cavities': {

@@ -417,6 +417,8 @@ export class SectionGizmo {
     writeSectionFieldTexture(field, style, this.textureBytes);
     this.texture.needsUpdate = true;
     this.quadMaterial.map = this.texture;
+    // The tint multiplies the map, so it has to go or the field is shaded sky blue.
+    this.quadMaterial.color.setHex(0xffffff);
     this.quadMaterial.opacity = FIELD_PLANE_OPACITY;
     this.quadMaterial.needsUpdate = true;
 
@@ -428,6 +430,7 @@ export class SectionGizmo {
   private clearFieldTexture(): void {
     if (!this.texture) return;
     this.quadMaterial.map = null;
+    this.quadMaterial.color.setHex(SECTION_PLANE_COLOR);
     this.quadMaterial.opacity = IDLE_PLANE_OPACITY;
     this.quadMaterial.needsUpdate = true;
     this.disposeTexture();
@@ -524,8 +527,9 @@ export class SectionGizmo {
 
   private applyTransforms(): void {
     const plane = this.getPlane();
-    // Clip away the half-space in front of the normal, so sweeping the plane
-    // towards the camera opens the model up rather than hiding it.
+    // The half-space the normal points into is the one removed, so the camera has
+    // to sit on the normal's side to look into the cut. Flipping the sign of the
+    // axis is what turns the cut around.
     this.clipPlane.normal.set(-this.normal[0], -this.normal[1], -this.normal[2]);
     this.clipPlane.constant = this.offset;
 
