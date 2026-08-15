@@ -94,6 +94,26 @@ interface ThermalModel {
 }
 ```
 
+### Sheet solids carry both faces
+
+CAD sheet-metal parts are **solids**, not mid-surfaces. Tessellating one produces a
+closed shell containing both faces of the sheet plus its edge bands — so the mesh has
+roughly twice the mid-surface area, and assigning the full thickness to every triangle
+would double the conduction cross-section.
+
+`Part.thickness` therefore means the *physical* sheet thickness, and the solver uses
+`thickness / 2` per face when the mesh is a closed solid (`volume > 0`). Two parallel
+shells of `t/2` joined around the edge bands conduct exactly `t` in total and convect
+from both faces, which is what a real sheet does. An open shell — a genuine mid-surface
+mesh — uses the full thickness.
+
+This also means thickness need not be typed in: for a thin closed sheet
+`volume / area = t / 2`, so import defaults `thickness` to `2 · volume / surfaceArea`.
+On the TBTE assembly that recovers 0.98–0.99 mm for all three sheet parts.
+
+Convection and radiation area is **not** halved. Both faces really are exposed, subject
+to cavity classification.
+
 ### Vertex welding is load-bearing
 
 Tessellators emit duplicated vertices at every face seam. Unwelded, an assembly is a
@@ -285,10 +305,16 @@ B-rep edge recovery from STEP is not worth a second code path.
 
 ### Cavity detection
 
-For each triangle, cast a ray along its outward normal. Rays that hit another triangle of
-the assembly an odd number of times, or never escape the bounding volume, mark the
-triangle as inside-facing. Inside-facing triangles are grouped into connected cavities by
-flood fill.
+Ray **parity** cannot see the inner wall of a closed sheet solid: a ray fired inward from
+an inner face crosses the far wall twice, reads even, and wrongly concludes "open air".
+On the TBTE assembly parity flags 6 % of the area as enclosed where the true figure is
+around 26 %.
+
+Classification is therefore by **occlusion**: sample directions over each triangle's
+outward hemisphere and ask what fraction escape the assembly. Below a threshold the
+triangle is inside-facing. Inside-facing triangles are grouped into connected cavities by
+flood fill, with a minimum size filter so ray noise does not become an entity — without
+it the assembly produced 77 cavities, most of them a single triangle.
 
 Each cavity gets a user-settable condition: `stillAir` (low h), `insulated`
 (configurable, near-zero h), or `adiabatic` (h = 0). The cavity also carries a fill
@@ -298,10 +324,19 @@ Ray casting uses a BVH over the triangle set; a few thousand rays is millisecond
 
 ### Contact detection
 
-Spatial hash over nodes. Node pairs on **different parts** closer than a tolerance
-(default 0.2 mm, user-adjustable) become candidate links. Candidates are grouped into
-contact patches by connectivity and presented as a list the user can inspect, delete, or
-add to by picking two faces.
+CAD assemblies are **non-conformal**: two mating faces are tessellated independently, so
+their vertices do not coincide even where the surfaces are flush. Pairing node to node
+therefore finds joints only by accident — on the TBTE assembly it found one of the nine
+pairs that actually touch, leaving the 200 °C block thermally isolated.
+
+Detection is instead **node-to-triangle**: every node is measured against whole triangles
+of other parts using a closest-point query on the BVH, and linked to the nearest vertex
+of the triangle it lands on so contacts remain node-to-node conductances. A facing filter
+(normals must oppose) stops parts that merely run alongside each other from being bonded.
+Default tolerance 0.5 mm, user-adjustable; the result is insensitive to it.
+
+Candidates are grouped into contact patches by connectivity and presented as a list the
+user can inspect, delete, or add to by picking two faces.
 
 Each contact carries a conductance in W/m²K, defaulting to a `perfect` preset (1e6). This
 is what lets a bolted joint, a welded seam, and two parts that merely touch behave

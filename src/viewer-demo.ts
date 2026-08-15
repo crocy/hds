@@ -1,6 +1,6 @@
 /* Throwaway visual check for src/viewer — not part of the app. */
 import { modelFromMesh } from '@/core/testModels';
-import { ThermalScene } from '@/viewer';
+import { ThermalScene, writeSectionFieldTexture } from '@/viewer';
 import type { BoundaryCondition, Scenario, ThermalModel } from '@/core/types';
 import { createDefaultScenario } from '@/core/defaults';
 
@@ -106,6 +106,15 @@ if (params.has('field')) {
       values[cell] = inside ? 293.15 + 180 * Math.exp(-Math.hypot(u, v - 0.05) / 0.05) : Number.NaN;
     }
   }
+  const probe = new Uint8Array(width * height * 4);
+  writeSectionFieldTexture(
+    { width, height, ...extent, values, mask, contours: [] },
+    { map: 'inferno', min: 293.15, max: 473.15 },
+    probe,
+  );
+  let opaque = 0;
+  for (let c = 0; c < width * height; c++) if (probe[c * 4 + 3] > 0) opaque++;
+  console.log('field opaque cells', opaque, 'of', width * height, 'extent', JSON.stringify(extent));
   scene.setSectionField(
     { width, height, ...extent, values, mask, contours: [] },
     { map: 'inferno', min: 293.15, max: 473.15 },
