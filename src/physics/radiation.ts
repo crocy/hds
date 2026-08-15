@@ -108,18 +108,3 @@ export function computeNodeEmissivity(
   }
   return emissivity;
 }
-
-/** Per-node linearised radiation coefficient, W/(m²·K), at that node's own temperature. */
-export function computeNodeRadiationCoefficients(
-  model: ThermalModel,
-  emissivity: ArrayLike<number>,
-  temperature: ArrayLike<number>,
-  ambient: number,
-  out?: Float64Array,
-): Float64Array {
-  const h = out && out.length === model.nodeCount ? out : new Float64Array(model.nodeCount);
-  for (let node = 0; node < model.nodeCount; node++) {
-    h[node] = radiationCoefficient(emissivity[node], temperature[node], ambient);
-  }
-  return h;
-}

@@ -23,6 +23,7 @@ import {
   buildDofMap,
   conductionThickness,
   cotangentWeights,
+  splitNodeCoefficient,
   surfaceCoefficients,
   type DofMap,
   type SurfaceCoefficients,
@@ -104,6 +105,9 @@ export function solveShell(
   // against these rather than against freshly recomputed ones keeps the accounting
   // consistent with the matrix that produced the answer.
   const coefficientTemperature = new Float32Array(model.nodeCount);
+  // Indexed by cavity id, and starting at ambient: the first pass linearises
+  // wall-to-cavity radiation there, and every later one against what the pocket solved to.
+  const cavityTemperature = new Float64Array(dofs.cavityDof.length).fill(scenario.ambient);
   let coefficients: SurfaceCoefficients;
   let loadPerDof: Float64Array;
   let fixedDof: Uint8Array;
@@ -122,7 +126,10 @@ export function solveShell(
   // field and a balance, with the warning that says how little was done to it.
   do {
     coefficientTemperature.set(temperature);
-    coefficients = surfaceCoefficients(model, scenario, coefficientTemperature);
+    coefficients = surfaceCoefficients(model, scenario, coefficientTemperature, {
+      dof: dofs.cavityDof,
+      temperature: cavityTemperature,
+    });
     const system = assembleSystem(model, scenario, dofs, coefficients);
     for (const message of system.warnings) warn(message);
     loadPerDof = system.loadPerDof;
@@ -149,13 +156,9 @@ export function solveShell(
     }
     dofSolution = cg.x;
 
-    const change = writeNodeTemperatures(
-      model,
-      dofs,
-      cg.x,
-      scenario.ambient,
-      temperature,
-      solvedTemperature,
+    const change = Math.max(
+      writeNodeTemperatures(model, dofs, cg.x, scenario.ambient, temperature, solvedTemperature),
+      readCavityTemperatures(dofs, cg.x, cavityTemperature),
     );
     converged = change < scenario.solver.tolerance;
   } while (!converged && outerIterations < maxOuter);
@@ -167,15 +170,25 @@ export function solveShell(
     );
   }
 
+  // The balance works per node, the assembly convects per triangle: the same
+  // area-weighted carry-over the emissivity goes through is what makes the two agree
+  // exactly, and it splits the film coefficient by environment for the same reason.
+  const convection = splitNodeCoefficient(model, coefficients.hConv, dofs.cavityDof);
   const balance = computeHeatBalance({
     model,
     scenario,
     temperature: solvedTemperature,
-    hConvection: nodeConvectionCoefficients(model, coefficients.hConv),
-    emissivity: coefficients.emissivity,
+    hConvection: convection.toAmbient,
+    emissivity: coefficients.emissivityToAmbient,
     conduction: conductionEdges(model, scenario, dofs),
     fixedNodes: fixedNodeList(model, dofs, fixedDof),
     nodeLoad: nodeLoads(model, dofs, loadPerDof),
+    cavity: {
+      nodeCavity: coefficients.nodeCavity,
+      hConvection: convection.toCavity,
+      emissivity: coefficients.emissivityToCavity,
+      temperature: cavityTemperature,
+    },
   });
 
   const limit = Math.max(ENERGY_RESIDUAL_FRACTION * heatThroughput(balance), RESIDUAL_NOISE_FLOOR);
@@ -272,26 +285,26 @@ function solvedExtent(
 }
 
 /**
- * Per-node film coefficient, area-weighted from the per-triangle values.
+ * Reads the cavity tail of the solution — the DOFs past `nodeDofCount` — and returns
+ * max |ΔT| over it.
  *
- * The assembly spreads h·A_t/3 to each corner while the balance integrates h·nodeArea,
- * so the area-weighted mean is the one choice that makes the two agree exactly.
- * Radiation needs no such step: its coefficient and its emissivity are already per node.
+ * That change belongs in the Picard measure alongside the walls': the next pass
+ * linearises wall-to-cavity radiation against these temperatures, so a pocket still
+ * moving is a coefficient still moving.
  */
-function nodeConvectionCoefficients(model: ThermalModel, hConv: Float32Array): Float64Array {
-  const hConvection = new Float64Array(model.nodeCount);
-  for (let t = 0; t < model.triCount; t++) {
-    const share = (hConv[t] * model.triArea[t]) / 3;
-    if (share === 0) continue;
-    hConvection[model.tris[t * 3]] += share;
-    hConvection[model.tris[t * 3 + 1]] += share;
-    hConvection[model.tris[t * 3 + 2]] += share;
+function readCavityTemperatures(
+  dofs: DofMap,
+  solution: Float64Array,
+  cavityTemperature: Float64Array,
+): number {
+  let change = 0;
+  for (let cavity = 0; cavity < dofs.cavityDof.length; cavity++) {
+    const dof = dofs.cavityDof[cavity];
+    if (dof < 0) continue;
+    change = Math.max(change, Math.abs(solution[dof] - cavityTemperature[cavity]));
+    cavityTemperature[cavity] = solution[dof];
   }
-  for (let node = 0; node < model.nodeCount; node++) {
-    const area = model.nodeArea[node];
-    hConvection[node] = area > 0 ? hConvection[node] / area : 0;
-  }
-  return hConvection;
+  return change;
 }
 
 /**

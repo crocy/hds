@@ -9,7 +9,11 @@ import { describe, expect, it } from 'vitest';
 import { mergeMeshes, modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
 import { DEFAULT_SOLVER_SETTINGS } from '../core/types';
 import type { BoundaryCondition, Cavity, Part, Scenario, ThermalModel } from '../core/types';
-import { computeNodeEmissivity, computeTriangleEmissivity } from './radiation';
+import {
+  computeNodeEmissivity,
+  computeTriangleEmissivity,
+  radiationCoefficient,
+} from './radiation';
 import {
   applyFixedTemperatures,
   assembleSystem,
@@ -445,7 +449,9 @@ describe('surface coefficients', () => {
     const coefficients = surfaceCoefficients(model, scenario, ambientField(model));
     expect(coefficients.hConv[0]).toBe(7);
     // Bare metal, ε = 0.15, linearised at T = T∞ = 300 K: h_rad = 4εσT³.
-    expect(coefficients.hRad[0]).toBeCloseTo(4 * 0.15 * 5.670374419e-8 * AMBIENT ** 3, 6);
+    expect(coefficients.hRadToAmbient[0]).toBeCloseTo(4 * 0.15 * 5.670374419e-8 * AMBIENT ** 3, 6);
+    // Nothing faces a cavity here, so the whole coefficient is aimed at the room.
+    expect(coefficients.hRadToCavity[0]).toBe(0);
   });
 
   it('ignores disabled conditions', () => {
@@ -607,6 +613,117 @@ describe('splitNodeCoefficient', () => {
       carried += split.toCavity[node] * model.nodeArea[node];
     }
     expect(carried).toBeCloseTo(3 * 2 + 9 * 0.5, 5);
+  });
+});
+
+describe('cavity coupling', () => {
+  const FILM = 8;
+  /** Warmer than the walls, so the sign of every coupling is visible. */
+  const CAVITY_T = 350;
+
+  /** The rim model, triangle 0 facing cavity 1 and triangle 1 open air. */
+  function rimScenario(cavity: Partial<Cavity> = {}, film = FILM): Scenario {
+    return scenarioWith({
+      partOverrides: { 'part-0': { finishId: 'no-radiation' } },
+      boundaryConditions: [
+        {
+          id: 'film',
+          kind: 'convection',
+          target: { type: 'part', partId: 'part-0' },
+          h: film,
+          enabled: true,
+        },
+      ],
+      // The same film coefficient on both triangles, so only the routing differs.
+      cavities: [cavityWith({ emissivity: 0, ...cavity })],
+    });
+  }
+
+  function assembleRim(scenario: Scenario) {
+    const model = rimModel();
+    model.triCavity[0] = 1;
+    const dofs = buildDofMap(model, scenario);
+    const coefficients = surfaceCoefficients(model, scenario, ambientField(model), {
+      dof: dofs.cavityDof,
+      temperature: Float64Array.of(AMBIENT, CAVITY_T),
+    });
+    return { model, dofs, system: assembleSystem(model, scenario, dofs, coefficients) };
+  }
+
+  it('couples a cavity wall to the cavity DOF instead of to ambient', () => {
+    const { model, dofs, system } = assembleRim(rimScenario());
+    const cav = dofs.cavityDof[1];
+    const hArea = (FILM * model.triArea[0]) / 3;
+
+    expect(cav).toBe(model.nodeCount);
+    // Node 1 sees only the cavity triangle, node 2 only the open-air one.
+    expect(system.matrix.get(1, cav)).toBeCloseTo(-hArea, 12);
+    expect(system.matrix.get(cav, 1)).toBeCloseTo(-hArea, 12);
+    expect(system.rhs[1]).toBe(0);
+    expect(system.matrix.get(2, cav)).toBe(0);
+    expect(system.rhs[2]).toBeCloseTo(hArea * AMBIENT, 9);
+    // Node 0 straddles the rim: its cavity share couples, its open-air share still
+    // takes ambient as a source.
+    expect(system.matrix.get(0, cav)).toBeCloseTo(-hArea, 12);
+    expect(system.rhs[0]).toBeCloseTo(hArea * AMBIENT, 9);
+  });
+
+  it('leaves the cavity row without a source term, so what flows in flows back out', () => {
+    const { model, dofs, system } = assembleRim(rimScenario());
+    const cav = dofs.cavityDof[1];
+    const hArea = (FILM * model.triArea[0]) / 3;
+
+    expect(system.rhs[cav]).toBe(0);
+    expect(system.matrix.get(cav, cav)).toBeCloseTo(3 * hArea, 12);
+    // A zero row sum with a zero RHS is the conservation statement itself: the row
+    // reads Σ h·A·(T_wall − T_cavity) = 0 and can say nothing else.
+    let rowSum = 0;
+    for (let p = system.matrix.rowPtr[cav]; p < system.matrix.rowPtr[cav + 1]; p++) {
+      rowSum += system.matrix.values[p];
+    }
+    expect(rowSum).toBeCloseTo(0, 12);
+  });
+
+  it('radiates into the cavity at the cavity’s temperature, not at ambient', () => {
+    // Film off, so what lands in the matrix is the radiation term alone.
+    const { model, dofs, system } = assembleRim(rimScenario({ emissivity: 0.4 }, 0));
+    const cav = dofs.cavityDof[1];
+
+    // 9 decimals, not more: the carry-over divides one float32 area by another, so the
+    // emissivity that reaches the matrix is 0.4 to about eight digits.
+    expect(system.matrix.get(1, cav)).toBeCloseTo(
+      -radiationCoefficient(0.4, AMBIENT, CAVITY_T) * model.nodeArea[1],
+      9,
+    );
+    // Node 0 takes A/3 at ε = 0.4 from the cavity triangle over a nodeArea of 2A/3, and
+    // its open-air half radiates nothing, so none of it is aimed at the room.
+    expect(system.matrix.get(0, cav)).toBeCloseTo(
+      -radiationCoefficient(0.2, AMBIENT, CAVITY_T) * model.nodeArea[0],
+      9,
+    );
+    expect(system.rhs[0]).toBe(0);
+    expect(system.rhs[cav]).toBe(0);
+  });
+
+  it('stays symmetric with the cavity DOFs in the system', () => {
+    const { system } = assembleRim(rimScenario({ emissivity: 0.4 }));
+    for (let row = 0; row < system.dofCount; row++) {
+      for (let p = system.matrix.rowPtr[row]; p < system.matrix.rowPtr[row + 1]; p++) {
+        expect(system.matrix.get(system.matrix.colIndex[p], row)).toBeCloseTo(
+          system.matrix.values[p],
+          12,
+        );
+      }
+    }
+  });
+
+  it('sends a cavity with no DOF to ambient, exactly as open air', () => {
+    // An adiabatic cavity has no row to exchange with, so a film coefficient the user
+    // set on its wall has nowhere to go but the room, as it did before cavities had one.
+    const { model, dofs, system } = assembleRim(rimScenario({ condition: 'adiabatic' }));
+    expect(dofs.cavityDof[1]).toBe(-1);
+    expect(system.dofCount).toBe(model.nodeCount);
+    expect(system.rhs[1]).toBeCloseTo(((FILM * model.triArea[0]) / 3) * AMBIENT, 9);
   });
 });
 

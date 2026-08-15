@@ -7,15 +7,25 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { finModel, mergeMeshes, modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
+import {
+  boxMesh,
+  finModel,
+  mergeMeshes,
+  modelFromMesh,
+  stripMesh,
+  twoStripModel,
+} from '../core/testModels';
 import { DEFAULT_SOLVER_SETTINGS } from '../core/types';
 import type {
   BoundaryCondition,
+  CavityCondition,
   Contact,
   Scenario,
   SolveResult,
   ThermalModel,
 } from '../core/types';
+import { surfaceCoefficients } from './assemble';
+import { computeTriangleEmissivity } from './radiation';
 import { heatThroughput, shellSolver, solveShell } from './solve';
 
 const AMBIENT = 300;
@@ -614,6 +624,188 @@ describe('body types', () => {
       }),
     );
     expect(result.warnings.join('\n')).toContain('No solvable nodes');
+  });
+});
+
+describe('sealed cavity', () => {
+  // A hot core inside a walled box. Everything the core and the box's inner skin own
+  // faces the trapped air between them; the outer skin is the only surface in the model
+  // that can see the room. So the heat path is
+  //   core → cavity air → inner skin → wall → outer skin → room
+  // and every watt the core sheds has to arrive at that last step or nowhere.
+  //
+  // boxMesh does not weld, so each face is a four-node quad conducting only within
+  // itself. That costs nothing here: no leg of the path runs around a corner.
+  const CORE_T = 400;
+  const CAVITY_H = 3;
+  const CAVITY_EMISSIVITY = 0.4;
+  const OPEN_H = 10;
+  /** W/(m²·K) through the box wall, as a contact between its two skins. */
+  const WALL_CONDUCTANCE = 1e4;
+  /** boxMesh emits four fresh vertices per face, six faces. */
+  const NODES_PER_BOX = 24;
+
+  function twoShellBox(
+    condition: CavityCondition = 'stillAir',
+    solver: Partial<Scenario['solver']> = {},
+  ) {
+    const model = modelFromMesh(
+      mergeMeshes(
+        boxMesh([0.1, 0.1, 0.1], [0.05, 0.05, 0.05], 0),
+        boxMesh([0.2, 0.2, 0.2], [0, 0, 0], 1),
+        boxMesh([0.204, 0.204, 0.204], [-0.002, -0.002, -0.002], 2),
+      ),
+      [{ name: 'core' }, { name: 'skin-in' }, { name: 'skin-out', finishId: 'painted' }],
+    );
+    for (let t = 0; t < model.triCount; t++) {
+      if (model.triPart[t] !== 2) model.triCavity[t] = 1;
+    }
+
+    // The two skins are the same box twice over, in the same vertex order, so node i of
+    // one faces node i of the other across the wall.
+    const nodePairs: number[] = [];
+    const pairArea: number[] = [];
+    for (let i = 0; i < NODES_PER_BOX; i++) {
+      nodePairs.push(NODES_PER_BOX + i, 2 * NODES_PER_BOX + i);
+      pairArea.push(model.nodeArea[NODES_PER_BOX + i]);
+    }
+
+    const sealed = condition !== 'adiabatic';
+    const scenario = scenarioWith({
+      cavities: [
+        {
+          id: 1,
+          name: 'inside',
+          condition,
+          h: sealed ? CAVITY_H : 0,
+          emissivity: sealed ? CAVITY_EMISSIVITY : 0,
+          fillK: 0.026,
+          triCount: 24,
+        },
+      ],
+      contacts: [
+        {
+          id: 'wall',
+          partA: 'part-1',
+          partB: 'part-2',
+          nodePairs: Uint32Array.from(nodePairs),
+          pairArea: Float32Array.from(pairArea),
+          conductance: WALL_CONDUCTANCE,
+          autoDetected: false,
+          enabled: true,
+        },
+      ],
+      boundaryConditions: [
+        fixedPartTemp('core-hot', 'part-0', CORE_T),
+        fixedFilm('open-air', 'part-2', OPEN_H),
+      ],
+      solver: { ...DEFAULT_SOLVER_SETTINGS, ...solver },
+    });
+    return { model, scenario, result: solveShell(model, scenario) };
+  }
+
+  /**
+   * Convection plus radiation from the triangles that face the room, integrated per
+   * triangle corner — the same watts the balance reports, counted from the other end.
+   */
+  function lossThroughOpenAir(
+    model: ThermalModel,
+    scenario: Scenario,
+    temperature: Float32Array,
+  ): number {
+    const { hConv } = surfaceCoefficients(model, scenario, temperature);
+    const emissivity = computeTriangleEmissivity(model, scenario);
+    let watts = 0;
+    for (let t = 0; t < model.triCount; t++) {
+      if (model.triCavity[t] > 0) continue;
+      const share = model.triArea[t] / 3;
+      for (let corner = 0; corner < 3; corner++) {
+        const excess = temperature[model.tris[t * 3 + corner]] - scenario.ambient;
+        watts +=
+          hConv[t] * share * excess +
+          emissivity[t] *
+            STEFAN_BOLTZMANN *
+            share *
+            (temperature[model.tris[t * 3 + corner]] ** 4 - scenario.ambient ** 4);
+      }
+    }
+    return watts;
+  }
+
+  it('lets nothing out but the open skin, and conserves what the pocket carries', () => {
+    const { model, scenario, result } = twoShellBox();
+    expect(result.converged).toBe(true);
+    expectNoNaN(result.temperature);
+
+    const loss = result.balance.lostByConvection + result.balance.lostByRadiation;
+    // Ambient is the only exit: the total loss is what leaves the outer skin, no more.
+    expect(loss).toBeGreaterThan(1);
+    expect(loss / lossThroughOpenAir(model, scenario, result.temperature)).toBeCloseTo(1, 5);
+    // Whatever crossed the pocket did leave the model, rather than being reported twice.
+    // Measured 5.7e-6 apart: h_rad frozen one Picard pass behind the field the balance
+    // then evaluates εσ(T⁴ − T_air⁴) at, now on the cavity side of the wall as well.
+    expect(result.balance.injectedAtFixed / loss).toBeCloseTo(1, 4);
+
+    // What the walls put into the pocket, the walls take back out.
+    expect(result.balance.perCavity).toHaveLength(1);
+    const [cavity] = result.balance.perCavity;
+    expect(cavity.cavityId).toBe(1);
+    // Measured 2.4e-6 of the loss at the default 0.01 K outer tolerance; the next test
+    // shows what that number is made of.
+    expect(Math.abs(cavity.netFlow) / loss).toBeLessThan(1e-5);
+    expectEnergyConserved(result);
+  });
+
+  it('closes the pocket’s books tighter as the outer loop tightens', () => {
+    // What is left of the net flow is the Picard lag and nothing structural: h_rad on
+    // both sides of the wall is frozen one pass behind the field the balance evaluates
+    // εσ(T⁴ − T_air⁴) at. Ask for a smaller last step and the disagreement follows it
+    // down, while the watts leaving the model do not move at all.
+    const loose = twoShellBox('stillAir').result.balance;
+    const tight = twoShellBox('stillAir', { tolerance: 1e-3 }).result.balance;
+    const lossOf = (balance: typeof loose) => balance.lostByConvection + balance.lostByRadiation;
+
+    expect(lossOf(tight)).toBeCloseTo(lossOf(loose), 3);
+    const looseFlow = Math.abs(loose.perCavity[0].netFlow) / lossOf(loose);
+    const tightFlow = Math.abs(tight.perCavity[0].netFlow) / lossOf(tight);
+    // Measured 2.4e-6 down to 1.1e-7.
+    expect(tightFlow).toBeLessThan(1e-6);
+    expect(tightFlow).toBeLessThan(looseFlow / 5);
+  });
+
+  it('holds the cavity air between the temperatures of the walls bounding it', () => {
+    const { model, result } = twoShellBox();
+    let min = Infinity;
+    let max = -Infinity;
+    for (let node = 0; node < model.nodeCount; node++) {
+      // Part 2 bounds the room, not the pocket.
+      if (model.nodePart[node] === 2) continue;
+      min = Math.min(min, result.temperature[node]);
+      max = Math.max(max, result.temperature[node]);
+    }
+
+    const { temperature } = result.balance.perCavity[0];
+    expect(temperature).toBeGreaterThan(min);
+    expect(temperature).toBeLessThan(max);
+    // A weighted mean of two walls 90 K apart, not of two walls that agree anyway.
+    expect(max - min).toBeGreaterThan(10);
+    expect(max).toBeCloseTo(CORE_T, 6);
+  });
+
+  it('assembles the cavity row, so nothing is left exchanging heat with nothing', () => {
+    expect(twoShellBox().result.warnings).toEqual([]);
+  });
+
+  it('gives an adiabatic cavity no row, and raises no warning about one', () => {
+    const { result } = twoShellBox('adiabatic');
+    expect(result.converged).toBe(true);
+    expect(result.warnings).toEqual([]);
+    expect(result.balance.perCavity).toEqual([]);
+    // Nothing can cross a pocket that exchanges nothing: the core sheds no power and
+    // the skins sit at ambient.
+    expect(result.balance.injectedAtFixed).toBeCloseTo(0, 9);
+    expect(result.balance.lostByConvection + result.balance.lostByRadiation).toBeCloseTo(0, 9);
+    expectEnergyConserved(result);
   });
 });
 

@@ -11,7 +11,7 @@ import type { Cavity, Part, Scenario, Target, ThermalModel } from '../core/types
 import { buildBvh, createHitBuffer, raycastInto, type Bvh, type HitBuffer } from '../geometry/bvh';
 import { computeConvectionCoefficients } from './convection';
 import { resolvePart } from './materials';
-import { computeNodeEmissivity, computeNodeRadiationCoefficients } from './radiation';
+import { computeTriangleEmissivity, radiationCoefficient } from './radiation';
 import { CsrMatrix, SparseBuilder } from './sparse';
 
 const NO_NODES = new Uint32Array(0);
@@ -469,13 +469,28 @@ export function splitNodeCoefficient(
 }
 
 /**
- * The cavity a triangle exchanges with, or −1 when that is ambient: open air, and a
- * cavity with no DOF, are the same thing to everything downstream.
+ * The DOF of the cavity a triangle exchanges with, or −1 when that is ambient: open
+ * air, and a cavity with no DOF, are the same thing to everything downstream.
  */
-function liveCavityOf(cavityId: number, cavityDof: Int32Array): number {
-  if (cavityId >= cavityDof.length) return -1;
-  return cavityDof[cavityId] >= 0 ? cavityId : -1;
+function cavityDofOf(cavityId: number, cavityDof: Int32Array): number {
+  return cavityId < cavityDof.length ? cavityDof[cavityId] : -1;
 }
+
+/** The same question answered as a cavity id, for the callers that group by pocket. */
+function liveCavityOf(cavityId: number, cavityDof: Int32Array): number {
+  return cavityDofOf(cavityId, cavityDof) >= 0 ? cavityId : -1;
+}
+
+/** Which cavities own a DOF, and how warm their air was on the previous Picard pass. */
+export interface CavityState {
+  /** `DofMap.cavityDof`: ≥ 0 for a live cavity, −1 otherwise. Indexed by cavity id. */
+  dof: Int32Array;
+  /** Cavity air temperature, kelvin, indexed by cavity id. */
+  temperature: ArrayLike<number>;
+}
+
+/** A model with no live cavity: every surface exchanges with ambient, as it always did. */
+const NO_CAVITIES: CavityState = { dof: new Int32Array(0), temperature: [] };
 
 export interface SurfaceCoefficients {
   /**
@@ -484,18 +499,51 @@ export interface SurfaceCoefficients {
    * its three corners.
    */
   hConv: Float32Array;
-  /** Effective emissivity per **node**, area-weighted from its incident triangles. */
-  emissivity: Float64Array;
-  /** W/(m²·K) per **node**, linearised at that node's own temperature. */
-  hRad: Float64Array;
+  /** Effective emissivity per **node** aimed at ambient, area-weighted from its triangles. */
+  emissivityToAmbient: Float64Array;
+  /** …and the share aimed at `nodeCavity`. The two sum to the blended value. */
+  emissivityToCavity: Float64Array;
+  /** Which cavity the cavity-facing shares belong to, per node. −1 where there is none. */
+  nodeCavity: Int32Array;
+  /** W/(m²·K) per **node**, linearised at that node's own temperature against ambient. */
+  hRadToAmbient: Float64Array;
+  /** …and against its cavity's temperature, both taken at that node's own temperature. */
+  hRadToCavity: Float64Array;
 }
 
+/**
+ * Both radiation coefficients are linearised at the temperature the difference they
+ * multiply is later taken at — the node's own on one side, and on the other the cavity
+ * air's from the previous Picard pass, which is the only lag the coupling adds.
+ */
 export function surfaceCoefficients(
   model: ThermalModel,
   scenario: Scenario,
   temperature: Float32Array,
+  cavities: CavityState = NO_CAVITIES,
 ): SurfaceCoefficients {
-  const emissivity = computeNodeEmissivity(model, scenario);
+  const emissivity = splitNodeCoefficient(
+    model,
+    computeTriangleEmissivity(model, scenario),
+    cavities.dof,
+  );
+  const hRadToAmbient = new Float64Array(model.nodeCount);
+  const hRadToCavity = new Float64Array(model.nodeCount);
+  for (let node = 0; node < model.nodeCount; node++) {
+    hRadToAmbient[node] = radiationCoefficient(
+      emissivity.toAmbient[node],
+      temperature[node],
+      scenario.ambient,
+    );
+    const cavity = emissivity.nodeCavity[node];
+    if (cavity < 0) continue;
+    hRadToCavity[node] = radiationCoefficient(
+      emissivity.toCavity[node],
+      temperature[node],
+      cavities.temperature[cavity],
+    );
+  }
+
   return {
     hConv: computeConvectionCoefficients(
       model,
@@ -503,8 +551,11 @@ export function surfaceCoefficients(
       temperature,
       convectionOverrides(model, scenario),
     ),
-    emissivity,
-    hRad: computeNodeRadiationCoefficients(model, emissivity, temperature, scenario.ambient),
+    emissivityToAmbient: emissivity.toAmbient,
+    emissivityToCavity: emissivity.toCavity,
+    nodeCavity: emissivity.nodeCavity,
+    hRadToAmbient,
+    hRadToCavity,
   };
 }
 
@@ -579,7 +630,9 @@ export function assembleSystem(
 ): AssembledSystem {
   const { nodeDof, dofCount } = dofs;
   const warnings: string[] = [];
-  const builder = new SparseBuilder(dofCount, Math.max(16, model.triCount * 12 + dofCount));
+  // Conduction and cavity convection put up to twelve entries each per triangle, and
+  // radiation up to five per node; the builder grows past this, it just need not.
+  const builder = new SparseBuilder(dofCount, Math.max(16, model.triCount * 24 + dofCount * 5));
   const rhs = new Float64Array(dofCount);
   const loadPerDof = new Float64Array(dofCount);
   const fixed = new Uint8Array(dofCount);
@@ -629,11 +682,22 @@ export function assembleSystem(
 
     const hArea = (coefficients.hConv[t] * model.triArea[t]) / 3;
     if (hArea !== 0) {
+      // A wall of a live cavity exchanges with the air trapped against it rather than
+      // with the room. The coupling is symmetric and the cavity row takes no source
+      // term, so at convergence that row states Σ h·A·(T_wall − T_cavity) = 0: energy
+      // conservation for the pocket is imposed by the matrix, not asserted afterwards.
+      const cav = cavityDofOf(model.triCavity[t], dofs.cavityDof);
       for (let c = 0; c < 3; c++) {
         const dof = nodeDof[corner[c]];
         if (dof < 0) continue;
         builder.add(dof, dof, hArea);
-        rhs[dof] += hArea * scenario.ambient;
+        if (cav < 0) {
+          rhs[dof] += hArea * scenario.ambient;
+          continue;
+        }
+        builder.add(cav, cav, hArea);
+        builder.add(dof, cav, -hArea);
+        builder.add(cav, dof, -hArea);
       }
     }
   }
@@ -641,15 +705,30 @@ export function assembleSystem(
   // Radiation is applied per node rather than spread from each triangle. h_rad·(T − T∞)
   // reproduces εσ(T⁴ − T∞⁴) exactly only when h_rad was linearised at the same T the
   // difference is taken at, and the balance takes it node by node. Emissivity is still
-  // a per-triangle property; computeNodeEmissivity carries it onto nodes by area, so the
+  // a per-triangle property; splitNodeCoefficient carries it onto nodes by area, so the
   // radiating area and its emissivities are unchanged — only the evaluation point moves.
+  //
+  // A rim node radiates in both directions, and its two shares are aimed at different
+  // temperatures, which is why the split exists at all.
   for (let node = 0; node < model.nodeCount; node++) {
     const dof = nodeDof[node];
     if (dof < 0) continue;
-    const hArea = coefficients.hRad[node] * model.nodeArea[node];
-    if (hArea === 0) continue;
-    builder.add(dof, dof, hArea);
-    rhs[dof] += hArea * scenario.ambient;
+    const area = model.nodeArea[node];
+
+    const toAmbient = coefficients.hRadToAmbient[node] * area;
+    if (toAmbient !== 0) {
+      builder.add(dof, dof, toAmbient);
+      rhs[dof] += toAmbient * scenario.ambient;
+    }
+
+    const cavity = coefficients.nodeCavity[node];
+    const toCavity = coefficients.hRadToCavity[node] * area;
+    if (cavity < 0 || toCavity === 0) continue;
+    const cav = dofs.cavityDof[cavity];
+    builder.add(dof, dof, toCavity);
+    builder.add(cav, cav, toCavity);
+    builder.add(dof, cav, -toCavity);
+    builder.add(cav, dof, -toCavity);
   }
 
   for (const contact of scenario.contacts) {

@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
 import { DEFAULT_SOLVER_SETTINGS } from '../core/types';
 import type { Contact, Scenario, ThermalModel } from '../core/types';
-import { computeHeatBalance, type ConductionEdges, type HeatBalanceInput } from './balance';
+import {
+  computeHeatBalance,
+  type CavityExchange,
+  type ConductionEdges,
+  type HeatBalanceInput,
+} from './balance';
 
 const STEFAN_BOLTZMANN = 5.670374419e-8;
 const AMBIENT = 300;
@@ -238,6 +243,104 @@ describe('computeHeatBalance', () => {
     expect(balance.perPart[1].convection).toBeCloseTo(0, 12);
     expect(balance.perPart[0].convection).toBeCloseTo(balance.lostByConvection, 5);
     expect(balance.perPart[0].convection).toBeGreaterThan(0);
+  });
+
+  /**
+   * One plate walling a cavity at 350 K: node 0 is hotter than the trapped air and node
+   * 1 cooler, so the pocket's books have both signs in them. Nodes 2 and 3 face the room.
+   */
+  function wallingACavity(): CavityExchange {
+    return {
+      nodeCavity: Int32Array.of(1, 1, -1, -1),
+      hConvection: Float64Array.of(4, 4, 0, 0),
+      emissivity: Float64Array.of(0.5, 0.5, 0, 0),
+      // Indexed by cavity id; 0 is the open-air marker and names no cavity.
+      temperature: Float64Array.of(AMBIENT, 350),
+    };
+  }
+
+  function cavityFlow(model: ThermalModel, node: number, t: number, air: number): number {
+    return (
+      4 * model.nodeArea[node] * (t - air) +
+      0.5 * STEFAN_BOLTZMANN * model.nodeArea[node] * (t ** 4 - air ** 4)
+    );
+  }
+
+  it('reports the net flow across each cavity’s walls', () => {
+    const model = modelFromMesh(stripMesh(0.1, 0.02, 1, 1));
+    const balance = computeHeatBalance(
+      inputFor(model, {
+        temperature: Float32Array.from([400, 300, AMBIENT, AMBIENT]),
+        cavity: wallingACavity(),
+      }),
+    );
+
+    expect(balance.perCavity).toHaveLength(1);
+    expect(balance.perCavity[0].cavityId).toBe(1);
+    expect(balance.perCavity[0].temperature).toBe(350);
+    expect(balance.perCavity[0].netFlow).toBeCloseTo(
+      cavityFlow(model, 0, 400, 350) + cavityFlow(model, 1, 300, 350),
+      9,
+    );
+    // One wall feeds it and the other draws on it, so the two really do fight.
+    expect(cavityFlow(model, 0, 400, 350)).toBeGreaterThan(0);
+    expect(cavityFlow(model, 1, 300, 350)).toBeLessThan(0);
+  });
+
+  it('keeps cavity exchange out of the loss to ambient', () => {
+    const model = modelFromMesh(stripMesh(0.1, 0.02, 1, 1));
+    const balance = computeHeatBalance(
+      inputFor(model, {
+        temperature: Float32Array.from([400, 300, AMBIENT, AMBIENT]),
+        cavity: wallingACavity(),
+      }),
+    );
+    // The caller hands over only the ambient share, so watts crossing into a sealed
+    // pocket cannot arrive here however hot its walls are.
+    expect(balance.lostByConvection).toBe(0);
+    expect(balance.lostByRadiation).toBe(0);
+    expect(balance.perCavity[0].netFlow).not.toBe(0);
+  });
+
+  it('counts what a pinned wall sheds into a pocket as power injected', () => {
+    // Without this the residual could not close: the watts leave the fixed node, so
+    // something has to have supplied them.
+    const model = modelFromMesh(stripMesh(0.1, 0.02, 1, 1));
+    const balance = computeHeatBalance(
+      inputFor(model, {
+        temperature: Float32Array.from([400, 350, AMBIENT, AMBIENT]),
+        cavity: wallingACavity(),
+        fixedNodes: Uint32Array.from([0]),
+      }),
+    );
+    expect(balance.injectedAtFixed).toBeCloseTo(cavityFlow(model, 0, 400, 350), 9);
+    expect(balance.residual).toBeCloseTo(cavityFlow(model, 0, 400, 350), 9);
+  });
+
+  it('groups the flow by cavity, in id order', () => {
+    const model = modelFromMesh(stripMesh(0.1, 0.02, 1, 1));
+    const balance = computeHeatBalance(
+      inputFor(model, {
+        temperature: Float32Array.from([400, 400, AMBIENT, AMBIENT]),
+        cavity: {
+          nodeCavity: Int32Array.of(3, 1, -1, -1),
+          hConvection: Float64Array.of(4, 4, 0, 0),
+          emissivity: Float64Array.of(0.5, 0.5, 0, 0),
+          temperature: Float64Array.of(AMBIENT, 350, AMBIENT, 380),
+        },
+      }),
+    );
+    expect(balance.perCavity.map((cavity) => cavity.cavityId)).toEqual([1, 3]);
+    expect(balance.perCavity[0].netFlow).toBeCloseTo(cavityFlow(model, 1, 400, 350), 9);
+    expect(balance.perCavity[1].netFlow).toBeCloseTo(cavityFlow(model, 0, 400, 380), 9);
+  });
+
+  it('reports no cavity at all when the caller passes none', () => {
+    const model = modelFromMesh(stripMesh(0.1, 0.02, 1, 1));
+    const balance = computeHeatBalance(
+      inputFor(model, { temperature: new Float32Array(model.nodeCount).fill(400) }),
+    );
+    expect(balance.perCavity).toEqual([]);
   });
 
   it('does not double-count a repeated fixed node', () => {

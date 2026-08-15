@@ -254,6 +254,14 @@ export interface HeatBalance {
     injected: number;
   }>;
   perContact: Array<{ contactId: string; watts: number }>;
+  /** One entry per cavity with a temperature of its own; empty when none has. */
+  perCavity: Array<{
+    cavityId: number;
+    /** kelvin */
+    temperature: number;
+    /** Net watts into the cavity. A sealed pocket has nowhere to put them, so ~0. */
+    netFlow: number;
+  }>;
 }
 
 export interface SolveResult {

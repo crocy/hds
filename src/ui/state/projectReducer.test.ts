@@ -18,6 +18,7 @@ function solved(state: ProjectState): ProjectState {
       residual: 0,
       perPart: [],
       perContact: [],
+      perCavity: [],
     },
     outerIterations: 3,
     converged: true,

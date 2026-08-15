@@ -9,15 +9,21 @@
  *
  * That run was a **mid-surface** model: its mesh carries 3194 cm² of surface, one
  * side per sheet, and no interior faces at all. Ours is the sheet solid the CAD
- * actually contains, so it carries 7734 cm² — outer skin, inner skin and edge
- * bands — and the comparable figure is the loss from the skin that faces ambient,
- * not the total. The assertions below are written against that comparison.
+ * actually contains, so it carries 7734 cm² — outer skin, inner skin and edge bands.
+ * Now that each sealed cavity holds a temperature of its own, the skin facing ambient
+ * is the only way out of the model, so the total loss and the open-air loss are the
+ * same watts and both are comparable to the reference's 61 W. Before that they were
+ * 101.5 W and 64.8 W, and the difference was heat sinking into a sealed box.
+ *
+ * We read 82.5 W where the reference reads 61 W, over the same surface. The pocket
+ * carries heat from the buried block to the skin by convection and radiation across
+ * it, which is a path a mesh with no interior faces does not have at all, and the skin
+ * runs 33.5 K above ambient here against the reference's 22.9 K.
  *
  * The two skins are merged onto one DOF per in-plane position wherever they can be
  * paired, so the sheet conducts its full thickness in plane and is isothermal across
  * it — see `pairThroughThickness`. Without that the inner skin is a near-lossless
- * spreader that the heat from the block cannot leave, and the model reports 94.6 W
- * against the 101.5 W it reports now.
+ * spreader that the heat from the block cannot leave.
  */
 
 import { readFileSync } from 'node:fs';
@@ -215,6 +221,16 @@ describe('TBTE housing', () => {
     console.log(`injected: ${result.balance.injectedAtFixed.toFixed(2)} W`);
     console.log(`residual: ${result.balance.residual.toExponential(2)} W`);
     console.log(
+      'cavity air:',
+      result.balance.perCavity
+        .map(
+          (cavity) =>
+            `#${cavity.cavityId} ${kelvinToCelsius(cavity.temperature).toFixed(1)} C` +
+            ` (net ${cavity.netFlow.toExponential(1)} W)`,
+        )
+        .join(', ') || 'none',
+    );
+    console.log(
       `fin length lambda: ${path.fit ? (path.fit.lambda * 1000).toFixed(1) + ' mm' : 'no fit'}` +
         `${path.fit ? ` (r2 ${path.fit.rSquared.toFixed(3)})` : ''}`,
     );
@@ -255,21 +271,39 @@ describe('TBTE housing', () => {
     expect(totalArea - enclosedArea).toBeGreaterThan(REFERENCE_MESH_AREA * 0.9);
     expect(totalArea - enclosedArea).toBeLessThan(REFERENCE_MESH_AREA * 1.1);
 
-    // ...and the heat leaving that skin should match the reference's 61 W. Measured
-    // 64.8 W. The total is higher (~102 W) because our cavity-facing skin exists and
-    // the reference's does not: at the default 'insulated' condition it sheds another
-    // ~37 W that the reference model structurally cannot.
-    expect(exposed.watts).toBeGreaterThan(50);
-    expect(exposed.watts).toBeLessThan(72);
+    // ...and the heat leaving that skin is the same order as the reference's 61 W.
+    // Measured 82.5 W: higher because the sealed pocket carries the buried block's heat
+    // to the skin, and the reference mesh has no interior for it to cross.
+    expect(exposed.watts).toBeGreaterThan(70);
+    expect(exposed.watts).toBeLessThan(95);
+
+    // The falsifiable prediction of the cavity air node, and the point of this test:
+    // ambient is the only exit, so the total loss and the loss through the open-air
+    // skin are the same watts. A sealed pocket that still sank heat would show up here
+    // as a total above the skin's figure, which is what 101.5 W against 64.8 W was.
+    const loss = result.balance.lostByConvection + result.balance.lostByRadiation;
+    expect(loss / exposed.watts).toBeCloseTo(1, 4);
+    expect(loss).toBeLessThan(90);
+    // Nothing is stranded any more: every cavity DOF is assembled into somebody's row.
+    expect(result.warnings.join('\n')).not.toContain('exchange no heat with anything');
+
+    // Each pocket conserves what crosses it, and sits between the block that heats it
+    // and the room. The four hottest are wholly bounded by the pinned block, so their
+    // air reaches 200 °C and carries nothing at all. Measured worst: 4.7e-5 W.
+    expect(result.balance.perCavity).toHaveLength(scenario.cavities.length);
+    for (const cavity of result.balance.perCavity) {
+      expect(Math.abs(cavity.netFlow) / loss).toBeLessThan(1e-5);
+      expect(cavity.temperature).toBeGreaterThan(scenario.ambient);
+      expect(cavity.temperature).toBeLessThanOrEqual(celsiusToKelvin(200) + 1e-6);
+    }
 
     // This is the model the residual has to be watched on, because it is the one with
     // PERFECT_CONTACT joints on a pinned part: eliminating that pin folds conductance ×
     // 473 K into its neighbours' rows and inflates ‖b‖ by ~6e3, so a CG target measured
     // against ‖b‖ buys ~6e3 less accuracy in watts than the tolerance reads as, and what
     // CG leaves behind arrives here as unaccounted power. Judged against the applied
-    // power instead, what is left is 7.4e-4 W — the Picard radiation lag alone, the same
-    // floor the fin benchmarks sit at. Measured 7.3e-6 of the loss.
-    const loss = result.balance.lostByConvection + result.balance.lostByRadiation;
+    // power instead, what is left is 1.8e-4 W — the Picard radiation lag alone, the same
+    // floor the fin benchmarks sit at. Measured 2.2e-6 of the loss.
     expect(Math.abs(result.balance.residual) / loss).toBeLessThan(5e-5);
     expect(result.warnings.join('\n')).not.toContain('Energy balance');
   }, 120_000);

@@ -11,6 +11,7 @@ function balanceOf(overrides: Partial<HeatBalance> = {}): HeatBalance {
     residual: 0,
     perPart: [],
     perContact: [],
+    perCavity: [],
     ...overrides,
   };
 }
