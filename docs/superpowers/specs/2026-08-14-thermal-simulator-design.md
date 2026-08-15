@@ -307,8 +307,9 @@ B-rep edge recovery from STEP is not worth a second code path.
 
 Ray **parity** cannot see the inner wall of a closed sheet solid: a ray fired inward from
 an inner face crosses the far wall twice, reads even, and wrongly concludes "open air".
-On the TBTE assembly parity flags 6 % of the area as enclosed where the true figure is
-around 26 %.
+On the TBTE assembly parity flags 6 % of the area as enclosed; the measured figure is
+**59.5 %**, which is what a sealed sheet housing should give — roughly half the
+tessellated area is inner skin.
 
 Classification is therefore by **occlusion**: sample directions over each triangle's
 outward hemisphere and ask what fraction escape the assembly. Below a threshold the
@@ -452,11 +453,29 @@ are reported rather than silently dropped.
 
 ### Integration
 
-Load `ohisje - TBTE 2x116.step`, apply the reference scenario (1 mm SS304, rim at 200 °C,
-20 °C still air, insulated cavity) and check the result against the known-good values from
-`thermal_field.png`: **≈61 W total loss to ambient** and **fin length λ ≈ 46 mm**. This is
-a real regression test against an already-trusted result and should be wired up as soon
-as the solver runs end to end.
+Load `ohisje - TBTE 2x116.step`, apply the reference scenario (1 mm SS304, block at
+200 °C, 20 °C still air) and compare against the prior trusted run.
+
+**Compare like for like.** `thermal_model_3d.html` embeds the reference's own mesh and
+field, so the comparison is made against decoded data rather than the caption. That mesh
+has 3194 cm² of area against our 7734 cm² for the same solid — the reference is a
+**mid-surface** model with no interior faces at all. Its 61 W is therefore the loss from
+the **outer skin only**, and the comparable quantity is not our total loss.
+
+On that basis:
+
+| quantity | ours | reference | agreement |
+|---|---|---|---|
+| open-air skin area | 3136 cm² | 3194 cm² | 1.8 % |
+| open-air loss | 59.1 W | 61 W | 3 % |
+| mean surface excess | 23.1 K | 22.9 K | 1 % |
+
+The skin-area match is an independent structural check on occlusion classification: it
+only lands if the enclosed fraction is right.
+
+λ is likewise not directly comparable. Running the same Dijkstra and exponential fit over
+the reference's *own* field gives 104 mm globally and 34–45 mm restricted to the first
+50–100 mm — so the quoted 46 mm is a near-field fit, not a whole-model one.
 
 ---
 
