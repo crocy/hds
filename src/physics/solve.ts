@@ -88,6 +88,12 @@ export function solveShell(
   }
 
   const temperature = initialTemperature(model, scenario, previous);
+  // The same field the caller gets, at the precision it was solved to. The balance is
+  // taken from this rather than from `temperature`: a Float32 temperature near 500 K is
+  // quantised to ~3e-5 K, and across a PERFECT_CONTACT joint carrying 1e4 W/K that
+  // rounding alone is worth tens of milliwatts of phantom flux. The residual has to
+  // measure the solve, not the storage the answer is handed back in.
+  const solvedTemperature = new Float64Array(model.nodeCount);
   // The field the current coefficients were evaluated from. Reporting the balance
   // against these rather than against freshly recomputed ones keeps the accounting
   // consistent with the matrix that produced the answer.
@@ -137,7 +143,14 @@ export function solveShell(
     }
     dofSolution = cg.x;
 
-    const change = writeNodeTemperatures(model, dofs, cg.x, scenario.ambient, temperature);
+    const change = writeNodeTemperatures(
+      model,
+      dofs,
+      cg.x,
+      scenario.ambient,
+      temperature,
+      solvedTemperature,
+    );
     converged = change < scenario.solver.tolerance;
   } while (!converged && outerIterations < maxOuter);
 
@@ -151,7 +164,7 @@ export function solveShell(
   const balance = computeHeatBalance({
     model,
     scenario,
-    temperature,
+    temperature: solvedTemperature,
     hConvection: nodeConvectionCoefficients(model, coefficients.hConv),
     emissivity: coefficients.emissivity,
     conduction: conductionEdges(model, scenario, dofs),
@@ -208,6 +221,9 @@ function initialTemperature(
  * Expands the DOF solution onto nodes and returns max |ΔT| over the solved nodes —
  * the Picard convergence measure. Every node of a lump part takes its shared DOF's
  * value, which is what makes the part isothermal.
+ *
+ * Written twice: `temperature` is what the caller renders and picks against, `solved`
+ * is the same field undiminished, for the balance to account watts from.
  */
 function writeNodeTemperatures(
   model: ThermalModel,
@@ -215,17 +231,20 @@ function writeNodeTemperatures(
   solution: Float64Array,
   ambient: number,
   temperature: Float32Array,
+  solved: Float64Array,
 ): number {
   let change = 0;
   for (let node = 0; node < model.nodeCount; node++) {
     const dof = dofs.nodeDof[node];
     if (dof < 0) {
       temperature[node] = ambient;
+      solved[node] = ambient;
       continue;
     }
     const value = solution[dof];
     change = Math.max(change, Math.abs(value - temperature[node]));
     temperature[node] = value;
+    solved[node] = value;
   }
   return change;
 }
