@@ -13,11 +13,17 @@ import {
 
 type Mesh = ReturnType<typeof boxMesh>;
 
-/** Flips one triangle's winding, which inverts its normal — a facet the parity vote reads backwards. */
+/** Flips one triangle's winding, which inverts its normal — a facet whose vote reads backwards. */
 function invertTriangle(mesh: Mesh, triangle: number): Mesh {
   const b = mesh.indices[triangle * 3 + 1];
   mesh.indices[triangle * 3 + 1] = mesh.indices[triangle * 3 + 2];
   mesh.indices[triangle * 3 + 2] = b;
+  return mesh;
+}
+
+/** Turns a box shell inside out, so its normals point away from the material around it. */
+function invertWinding(mesh: Mesh): Mesh {
+  for (let t = 0; t < mesh.indices.length / 3; t++) invertTriangle(mesh, t);
   return mesh;
 }
 
@@ -27,6 +33,18 @@ function nestedBoxes(): Mesh {
     boxMesh([0.2, 0.2, 0.2], [0, 0, 0], 0),
     boxMesh([0.06, 0.06, 0.06], [0.07, 0.07, 0.07], 1),
   );
+}
+
+/** boxMesh emits its faces in the order −Z, +Z, −Y, +Y, −X, +X, two triangles each. */
+const PLUS_Z_TRIANGLES = [2, 3];
+
+function dropTriangles(mesh: Mesh, triangles: number[]): Mesh {
+  for (const t of [...triangles].sort((x, y) => y - x)) {
+    mesh.indices.splice(t * 3, 3);
+    mesh.partOf.splice(t, 1);
+    mesh.faceOf.splice(t, 1);
+  }
+  return mesh;
 }
 
 function model(mesh: Mesh): ThermalModel {
@@ -71,13 +89,37 @@ describe('detectCavities', () => {
     expect(detectCavities(built).cavities).toEqual([]);
   });
 
-  it('fills a pinhole so one cavity does not split in two', () => {
-    const mesh = nestedBoxes();
-    const inner = mesh.indices.length / 3 - 12;
-    const built = model(invertTriangle(mesh, inner + 5));
+  it('sees the inner wall of a hollow sheet solid, which ray parity reads as open air', () => {
+    // The bug this scheme exists for: a sheet-metal box is a solid, so its tessellation
+    // carries an inner surface as well as an outer one. A ray fired inward from that
+    // inner surface crosses the far wall twice and reads even — "open air" — while the
+    // surface is in fact sealed inside the box.
+    const wall = mergeMeshes(
+      boxMesh([0.2, 0.2, 0.2], [0, 0, 0], 0),
+      invertWinding(boxMesh([0.18, 0.18, 0.18], [0.01, 0.01, 0.01], 0)),
+    );
+    const built = modelFromMesh(wall, [{ name: 'hollow' }]);
+    const result = detectCavities(built);
+
+    expect(result.cavities).toHaveLength(1);
+    expect(result.cavities[0].triCount).toBe(12);
+    // Exactly the inner shell, and it sees no sky at all.
+    expect(trianglesOfCavity(built, 1)).toEqual(
+      Array.from({ length: 12 }, (_, i) => built.triCount - 12 + i),
+    );
+    for (let t = 0; t < 12; t++) expect(result.openSkyFraction[t]).toBe(1);
+    for (let t = 12; t < 24; t++) expect(result.openSkyFraction[t]).toBe(0);
+  });
+
+  it('fills a pinhole so one cavity does not come out perforated', () => {
+    // An aperture in the enclosure: the two facets of the inner box that look straight
+    // out of it do see the sky, and dropping them would perforate an otherwise sealed
+    // cavity wall.
+    const openTop = dropTriangles(boxMesh([0.2, 0.2, 0.2], [0, 0, 0], 0), PLUS_Z_TRIANGLES);
+    const built = model(mergeMeshes(openTop, boxMesh([0.06, 0.06, 0.06], [0.07, 0.07, 0.07], 1)));
 
     const raw = detectCavities(built, { cleanupPasses: 0, minTriangles: 1 });
-    expect(raw.cavities[0].triCount).toBe(11);
+    expect(raw.cavities[0].triCount).toBe(10);
 
     const cleaned = detectCavities(built);
     expect(cleaned.cavities).toHaveLength(1);

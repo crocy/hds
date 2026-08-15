@@ -21,6 +21,7 @@ import {
   applyFixedTemperatures,
   assembleSystem,
   buildDofMap,
+  conductionThickness,
   cotangentWeights,
   surfaceCoefficients,
   type DofMap,
@@ -308,7 +309,9 @@ function conductionEdges(model: ThermalModel, scenario: Scenario, dofs: DofMap):
 
   const sheetConductance = model.parts.map((part) => {
     const resolved = resolvePart(part, scenario.partOverrides[part.id]);
-    return resolved.bodyType === 'insulator' ? 0 : resolved.material.k * resolved.thickness;
+    return resolved.bodyType === 'insulator'
+      ? 0
+      : resolved.material.k * conductionThickness(part, resolved.thickness);
   });
 
   const weights = new Float64Array(3);

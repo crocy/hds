@@ -8,11 +8,12 @@
 import { describe, expect, it } from 'vitest';
 import { modelFromMesh, stripMesh, twoStripModel } from '../core/testModels';
 import { DEFAULT_SOLVER_SETTINGS } from '../core/types';
-import type { BoundaryCondition, Scenario, ThermalModel } from '../core/types';
+import type { BoundaryCondition, Part, Scenario, ThermalModel } from '../core/types';
 import {
   applyFixedTemperatures,
   assembleSystem,
   buildDofMap,
+  conductionThickness,
   convectionOverrides,
   cotangentWeights,
   partIndexOf,
@@ -287,6 +288,43 @@ describe('surface coefficients', () => {
       ],
     });
     expect(Number.isNaN(convectionOverrides(model, scenario)[0])).toBe(true);
+  });
+});
+
+describe('conductionThickness', () => {
+  const sheet = (volume: number): Part => ({
+    ...modelFromMesh(stripMesh(0.1, 0.05, 1, 1)).parts[0],
+    volume,
+  });
+
+  it('halves the thickness of a closed solid and leaves an open shell alone', () => {
+    // The mesh of a sheet-metal solid carries both faces, so each one conducts half.
+    expect(conductionThickness(sheet(1e-6), 0.002)).toBe(0.001);
+    expect(conductionThickness(sheet(-1e-6), 0.002)).toBe(0.001);
+    expect(conductionThickness(sheet(0), 0.002)).toBe(0.002);
+  });
+
+  it('gives a closed solid half the conduction of the same mesh read as a mid-surface', () => {
+    const midSurface = modelFromMesh(stripMesh(0.1, 0.05, 2, 1));
+    const solid: ThermalModel = {
+      ...midSurface,
+      parts: [{ ...midSurface.parts[0], volume: 1e-6 }],
+    };
+    const scenario = bareConduction(['part-0']);
+    const conductanceOf = (model: ThermalModel) => {
+      const dofs = buildDofMap(model, scenario);
+      const system = assembleSystem(
+        model,
+        scenario,
+        dofs,
+        surfaceCoefficients(model, scenario, ambientField(model)),
+      );
+      return system.matrix.get(0, 1);
+    };
+
+    expect(conductanceOf(solid)).toBeCloseTo(conductanceOf(midSurface) / 2, 12);
+    // Area is untouched: both faces of the sheet really are exposed.
+    expect(solid.parts[0].surfaceArea).toBe(midSurface.parts[0].surfaceArea);
   });
 });
 

@@ -26,7 +26,10 @@ export interface BuildOptions {
   featureAngleDeg?: number;
   /** thinnessRatio below this guesses 'sheet', above it 'lump'. */
   sheetThinnessThreshold?: number;
-  /** Metres. Applied to every part; the user edits it per part afterwards. */
+  /**
+   * Metres. Overrides the thickness `sheetThicknessOf` reads off each closed
+   * solid, and is what open shells fall back to. Default DEFAULT_SHEET_THICKNESS.
+   */
   defaultThickness?: number;
   defaultMaterialId?: string;
   defaultFinishId?: string;
@@ -40,6 +43,23 @@ export const DEFAULT_WELD_TOLERANCE_RATIO = 1e-6;
  * thickness" stops describing the part. The guess is shown and overridable.
  */
 export const DEFAULT_SHEET_THINNESS_THRESHOLD = 0.3;
+
+/** Metres. Only used where the mesh itself cannot say — an open shell has no volume to read. */
+export const DEFAULT_SHEET_THICKNESS = 0.001;
+
+/**
+ * The sheet thickness a closed solid implies, metres, or 0 when it implies none.
+ *
+ * A CAD sheet-metal part is a solid, so its tessellation is a closed shell carrying
+ * both faces of the sheet plus the edge bands: `volume ≈ A_mid·t` while
+ * `surfaceArea ≈ 2·A_mid`, which leaves `t = 2·volume/surfaceArea`. On the TBTE
+ * assembly that recovers 0.98–0.99 mm for the three parts drawn from 1 mm sheet —
+ * better than any default the user could be asked to guess.
+ */
+function sheetThicknessOf(volume: number, surfaceArea: number): number {
+  if (!(surfaceArea > 0)) return 0;
+  return (2 * Math.abs(volume)) / surfaceArea;
+}
 
 export function buildThermalModel(mesh: ImportedMesh, options: BuildOptions = {}): ThermalModel {
   const featureAngleDeg = options.featureAngleDeg ?? DEFAULT_FEATURE_ANGLE_DEG;
@@ -108,7 +128,7 @@ export function buildThermalModel(mesh: ImportedMesh, options: BuildOptions = {}
     triArea,
     nodeCount,
     sheetThreshold,
-    thickness: options.defaultThickness ?? 0.001,
+    thicknessOverride: options.defaultThickness,
     materialId: options.defaultMaterialId ?? 'ss304',
     finishId: options.defaultFinishId ?? 'bare-metal',
   });
@@ -375,7 +395,8 @@ interface PartInputs {
   triArea: Float32Array;
   nodeCount: number;
   sheetThreshold: number;
-  thickness: number;
+  /** Set only when the caller asked for one thickness everywhere. */
+  thicknessOverride: number | undefined;
   materialId: string;
   finishId: string;
 }
@@ -395,6 +416,7 @@ function buildParts(inputs: PartInputs): Part[] {
     const volume = shellVolume(inputs.positions, inputs.tris, triStart, triEnd, inputs.nodeCount);
     const thinnessRatio =
       surfaceArea > 0 && diagonal > 0 ? (6 * Math.abs(volume)) / (surfaceArea * diagonal) : 0;
+    const impliedThickness = sheetThicknessOf(volume, surfaceArea);
 
     parts.push({
       id: `${slugify(name)}-${p}`,
@@ -404,7 +426,9 @@ function buildParts(inputs: PartInputs): Part[] {
       bodyType: thinnessRatio < inputs.sheetThreshold ? 'sheet' : 'lump',
       materialId: inputs.materialId,
       finishId: inputs.finishId,
-      thickness: inputs.thickness,
+      thickness:
+        inputs.thicknessOverride ??
+        (impliedThickness > 0 ? impliedThickness : DEFAULT_SHEET_THICKNESS),
       triRange: [triStart, triEnd],
       nodeRange: [nodeStart, nodeEnd],
       volume,

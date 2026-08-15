@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { boxMesh, mergeMeshes, stripMesh } from '../core/testModels';
-import { buildThermalModel } from './build';
+import { buildThermalModel, DEFAULT_SHEET_THICKNESS } from './build';
 import type { ImportedMesh } from './importers';
 import { buildEdgeAdjacency, connectedComponents } from './topology';
 import type { LengthUnit } from '../core/units';
@@ -106,6 +106,28 @@ describe('volume and body type', () => {
     const thin = buildThermalModel(imported(boxMesh([1, 1, 0.005])));
     expect(thin.parts[0].thinnessRatio).toBeLessThan(0.3);
     expect(thin.parts[0].bodyType).toBe('sheet');
+  });
+
+  it('reads the sheet thickness off a closed solid instead of guessing', () => {
+    // A 1×1 m plate of 2 mm sheet, tessellated as the solid it is: both faces plus the
+    // edge bands. 2·volume/surfaceArea recovers the 2 mm the drawing would quote.
+    // The edge bands are counted in the area but add almost nothing to the volume, so
+    // the reading sits a fraction of a percent low — 1.992 mm here, 0.99 mm for the
+    // TBTE parts drawn from 1 mm sheet.
+    const model = buildThermalModel(imported(boxMesh([1, 1, 0.002])));
+    expect(model.parts[0].thickness).toBeCloseTo(0.002, 4);
+    expect(model.parts[0].thickness).toBeLessThan(0.002);
+  });
+
+  it('falls back to the default thickness for an open shell, and honours an override', () => {
+    const open = buildThermalModel(imported(stripMesh(1, 1, 4, 4)));
+    expect(open.parts[0].volume).toBe(0);
+    expect(open.parts[0].thickness).toBe(DEFAULT_SHEET_THICKNESS);
+
+    const overridden = buildThermalModel(imported(boxMesh([1, 1, 0.002])), {
+      defaultThickness: 0.005,
+    });
+    expect(overridden.parts[0].thickness).toBe(0.005);
   });
 
   it('never guesses insulator', () => {

@@ -7,26 +7,31 @@
  *
  * ## Scheme
  *
- * From each triangle's centroid, nudged out along its outward normal, we cast a
- * fan of rays into the outward hemisphere and count crossings of the whole
- * assembly. An odd crossing count means the sample point is enclosed by some
- * closed shell; an even count (usually zero) means it can see ambient.
+ * The question asked of each triangle is "can this surface see the sky?", not "is
+ * this point inside something". From the centroid, nudged out along the outward
+ * normal, `rayCount` directions are sampled over the outward hemisphere and the
+ * cosine-weighted fraction that escapes the assembly is measured — the view factor
+ * to ambient. Below `openSkyThreshold` the triangle is inside-facing.
  *
- * Parity alone is fragile: a ray that grazes a shared edge is reported by both
- * adjacent triangles, an open shell gives an arbitrary count depending on where
- * the ray leaves it, and coincident surfaces of touching parts pile hits at the
- * same distance. Four mitigations, in this order:
+ * The obvious alternative, ray **parity**, is what this replaced, and it cannot see
+ * the case that matters. A CAD sheet-metal part is a closed solid, so the wall of a
+ * housing has an inner surface as well as an outer one; a ray fired inward from that
+ * inner surface crosses the far wall twice, reads even, and concludes "open air". On
+ * the TBTE assembly parity flagged 6 % of the area where occlusion flags 59 % — a
+ * sealed housing is roughly half inner skin — and the missing half was convecting to
+ * ambient from inside a closed box. What is left, 3136 cm², matches the whole of the
+ * reference run's mid-surface mesh (3194 cm²) to 2 %.
  *
- * 1. Hits closer together than `mergeDistance` count as one crossing, which folds
- *    a shared-edge double hit back into the single surface crossing it is.
- * 2. `rayCount` rays spread over a cone around the normal each vote, and a
- *    supermajority is needed. A triangle where the rays disagree is sitting on
- *    geometry the parity test cannot read, and guessing there is what produced
- *    hundreds of one-triangle cavities on the TBTE assembly.
- * 3. The vote is then cleaned up against mesh adjacency: a triangle that disagrees
- *    with all of its neighbours is noise, and a pinhole of open-air triangles inside
- *    a cavity wall is what splits one real cavity into several.
- * 4. Groups too small to be a volume — by triangle count and by area — stay open air.
+ * Occlusion needs no crossing-parity bookkeeping, but the vote and the filtering
+ * that made parity usable still earn their place:
+ *
+ * 1. `rayCount` directions vote, so classification degrades smoothly on geometry that
+ *    is genuinely half-open rather than flipping on one unlucky ray.
+ * 2. The vote is cleaned up against mesh adjacency: a triangle that disagrees with all
+ *    of its neighbours is noise, and a pinhole of open-air triangles inside a cavity
+ *    wall is what splits one real cavity into several.
+ * 3. Groups too small to be a volume — by triangle count and by area — stay open air.
+ *    Without this the assembly produced 77 cavities, most of them one triangle.
  *
  * Inside-facing triangles are then grouped into cavities by flood fill across
  * shared edges. Edges are matched by welded position rather than node index, so
@@ -35,7 +40,7 @@
  */
 
 import type { Cavity, CavityCondition, ThermalModel } from '../core/types';
-import { buildBvh, createHitBuffer, raycastInto, type Bvh, type RaycastOptions } from './bvh';
+import { buildBvh, countRayHits, type Bvh, type RaycastOptions } from './bvh';
 import { clusterPoints } from './spatialHash';
 
 /** triCavity is a Uint8Array, so 0 is open air and 255 is the highest usable id. */
@@ -63,16 +68,15 @@ export const CAVITY_DEFAULTS: Record<CavityCondition, CavityConditionDefaults> =
 };
 
 export interface CavityDetectionOptions {
-  /** Rays per triangle. Default 17. */
+  /** Directions sampled over each triangle's outward hemisphere. Default 32. */
   rayCount?: number;
-  /** Fraction of rays that must agree before a triangle counts as enclosed. Default 2/3. */
-  enclosedVoteRatio?: number;
-  /** Half-angle of the ray fan around the outward normal, radians. Default 60°. */
-  coneAngle?: number;
+  /**
+   * View factor to ambient below which a triangle counts as enclosed, 0..1.
+   * Default DEFAULT_OPEN_SKY_THRESHOLD.
+   */
+  openSkyThreshold?: number;
   /** How far off the surface a ray starts, metres. Default 1e-5 × bbox diagonal. */
   offset?: number;
-  /** Hits within this distance of each other count as one crossing. Default 1e-7 × diagonal. */
-  mergeDistance?: number;
   /** Position tolerance for matching shared edges during flood fill. Default 1e-6 × diagonal. */
   weldTolerance?: number;
   /** Sweeps of the adjacency cleanup over the raw vote. Default 2; 0 disables it. */
@@ -93,13 +97,25 @@ export interface CavityDetectionResult {
   triCavity: Uint8Array;
   /** 1 where the triangle's outward side is enclosed, before grouping. */
   insideFacing: Uint8Array;
+  /** The measurement behind `insideFacing`: view factor to ambient per triangle, 0..1. */
+  openSkyFraction: Float32Array;
 }
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const DEFAULT_CONE_ANGLE = Math.PI / 3;
-const DEFAULT_RAY_COUNT = 17;
-/** Two thirds, not a bare majority: a 9-vs-8 split is a coin toss, not a cavity. */
-const DEFAULT_ENCLOSED_VOTE_RATIO = 2 / 3;
+const DEFAULT_RAY_COUNT = 32;
+/**
+ * A surface that reaches ambient over less than a fifth of its hemisphere is in a
+ * pocket, whatever the pocket leaks through.
+ *
+ * Real assemblies measure strongly bimodal: on TBTE, 59 % of the area scores below
+ * 0.2, 39 % scores above 0.95, and the 0.2–0.95 band in between is empty, so any
+ * threshold in that window classifies identically. The value therefore only decides
+ * genuinely half-open geometry — a shallow tray, a wide slot — and 0.2 keeps those
+ * open. Note that requiring *zero* escape instead would call the housing's interior
+ * open air: it leaks a view factor of 0.05–0.15 through the gaps between parts, and
+ * that is still a cavity.
+ */
+export const DEFAULT_OPEN_SKY_THRESHOLD = 0.2;
 const DEFAULT_CLEANUP_PASSES = 2;
 /** A few facets is the least that can bound a volume; below that it is ray noise. */
 const DEFAULT_MIN_TRIANGLES = 4;
@@ -142,24 +158,23 @@ export function detectCavities(
 ): CavityDetectionResult {
   const diagonal = boundsDiagonal(model);
   const rayCount = Math.max(1, Math.floor(options.rayCount ?? DEFAULT_RAY_COUNT));
-  const voteRatio = options.enclosedVoteRatio ?? DEFAULT_ENCLOSED_VOTE_RATIO;
-  const cosCone = Math.cos(options.coneAngle ?? DEFAULT_CONE_ANGLE);
+  const openSkyThreshold = options.openSkyThreshold ?? DEFAULT_OPEN_SKY_THRESHOLD;
   const offset = options.offset ?? Math.max(diagonal * 1e-5, 1e-9);
-  const mergeDistance = options.mergeDistance ?? Math.max(diagonal * 1e-7, 1e-12);
   const weldTolerance = options.weldTolerance ?? Math.max(diagonal * 1e-6, 1e-12);
   const cleanupPasses = Math.max(0, Math.floor(options.cleanupPasses ?? DEFAULT_CLEANUP_PASSES));
   const minTriangles = Math.max(1, Math.floor(options.minTriangles ?? DEFAULT_MIN_TRIANGLES));
   const minArea = options.minArea ?? meanTriangleArea(model) * DEFAULT_MIN_CAVITY_AREA_RATIO;
   const condition = options.condition ?? 'stillAir';
 
-  const insideFacing = markInsideFacing(model, {
+  const openSkyFraction = measureOpenSky(model, {
     bvh: options.bvh ?? buildBvh(model),
     rayCount,
-    minVotes: Math.max(1, Math.ceil(rayCount * voteRatio)),
-    cosCone,
     offset,
-    mergeDistance,
   });
+  const insideFacing = new Uint8Array(model.triCount);
+  for (let t = 0; t < model.triCount; t++) {
+    insideFacing[t] = openSkyFraction[t] < openSkyThreshold ? 1 : 0;
+  }
 
   const neighbours = buildTriangleNeighbours(model, weldTolerance);
   cleanUpInsideFacing(insideFacing, neighbours, cleanupPasses);
@@ -191,7 +206,7 @@ export function detectCavities(
     cavity.triCount += group.length;
   }
 
-  return { cavities, triCavity, insideFacing };
+  return { cavities, triCavity, insideFacing, openSkyFraction };
 }
 
 /** Reclassifies one triangle. `cavityId` 0 means open air. */
@@ -238,22 +253,27 @@ export function refreshCavityCounts(model: ThermalModel, cavities: Cavity[]): vo
   }
 }
 
-interface FacingParameters {
+interface OpenSkyParameters {
   bvh: Bvh;
   rayCount: number;
-  /** Rays that must report an odd crossing count before the triangle counts as enclosed. */
-  minVotes: number;
-  cosCone: number;
   offset: number;
-  mergeDistance: number;
 }
 
-function markInsideFacing(model: ThermalModel, parameters: FacingParameters): Uint8Array {
-  const { bvh, rayCount, minVotes, cosCone, offset, mergeDistance } = parameters;
+/**
+ * View factor to ambient per triangle: the fraction of a cosine-weighted sample of the
+ * outward hemisphere that leaves the assembly without hitting anything.
+ *
+ * The samples are a golden-angle spiral with `sinθ = √((k + ½)/rayCount)`, which
+ * distributes them by projected solid angle. Averaging escape over them with equal
+ * weight is therefore already the cosine-weighted average — the same weighting that
+ * governs how much radiation and convection this surface can actually exchange with
+ * ambient, rather than a raw count of directions.
+ */
+function measureOpenSky(model: ThermalModel, parameters: OpenSkyParameters): Float32Array {
+  const { bvh, rayCount, offset } = parameters;
   const { nodes, tris, triNormal, triCount } = model;
-  const insideFacing = new Uint8Array(triCount);
+  const openSky = new Float32Array(triCount);
 
-  const hits = createHitBuffer(32);
   const rayOptions: RaycastOptions = { minDistance: 0, skipTriangle: -1 };
   const origin = new Float64Array(3);
   const direction = new Float64Array(3);
@@ -273,11 +293,10 @@ function markInsideFacing(model: ThermalModel, parameters: FacingParameters): Ui
     orthonormalBasis(nx, ny, nz, tangentU, tangentV);
     rayOptions.skipTriangle = t;
 
-    let enclosedVotes = 0;
+    let escaped = 0;
     for (let k = 0; k < rayCount; k++) {
-      // Golden-angle fan over the cone; k = 0 is the normal itself.
-      const cosTheta = 1 - (k / rayCount) * (1 - cosCone);
-      const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta));
+      const sinTheta = Math.sqrt((k + 0.5) / rayCount);
+      const cosTheta = Math.sqrt(Math.max(0, 1 - sinTheta * sinTheta));
       const phi = k * GOLDEN_ANGLE;
       const su = Math.cos(phi) * sinTheta;
       const sv = Math.sin(phi) * sinTheta;
@@ -285,19 +304,11 @@ function markInsideFacing(model: ThermalModel, parameters: FacingParameters): Ui
       direction[1] = ny * cosTheta + tangentU[1] * su + tangentV[1] * sv;
       direction[2] = nz * cosTheta + tangentU[2] * su + tangentV[2] * sv;
 
-      const hitCount = raycastInto(bvh, origin, direction, hits, rayOptions);
-      let crossings = 0;
-      let previous = -Infinity;
-      for (let i = 0; i < hitCount; i++) {
-        const distance = hits.distances[i];
-        if (distance - previous > mergeDistance) crossings++;
-        previous = distance;
-      }
-      if (crossings % 2 === 1) enclosedVotes++;
+      if (countRayHits(bvh, origin, direction, rayOptions) === 0) escaped++;
     }
-    insideFacing[t] = enclosedVotes >= minVotes ? 1 : 0;
+    openSky[t] = escaped / rayCount;
   }
-  return insideFacing;
+  return openSky;
 }
 
 /**

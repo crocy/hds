@@ -3,8 +3,15 @@
  *
  * This is the only test that exercises the real chain — STEP tessellation,
  * welding, topology, cavity detection, contacts, solve — against a model whose
- * answer is already known from a trusted prior run (thermal_field.png):
- * ≈61 W total loss to ambient and a fin length λ ≈ 46 mm.
+ * answer is already known from a trusted prior run (thermal_field.png and
+ * thermal_model_3d.html): ≈61 W total loss to ambient, 1 mm SS304, block rim at
+ * 200 °C, 20 °C still air, insulated cavity.
+ *
+ * That run was a **mid-surface** model: its mesh carries 3194 cm² of surface, one
+ * side per sheet, and no interior faces at all. Ours is the sheet solid the CAD
+ * actually contains, so it carries 7734 cm² — outer skin, inner skin and edge
+ * bands — and the comparable figure is the loss from the skin that faces ambient,
+ * not the total. The assertions below are written against that comparison.
  */
 
 import { readFileSync } from 'node:fs';
@@ -17,14 +24,43 @@ import { buildThermalModel } from '../geometry/build';
 import { detectCavities, setCavityCondition } from '../geometry/cavity';
 import { detectContacts } from '../geometry/contacts';
 import { solveShell } from '../physics/solve';
-import { resolveTargetNodes } from '../physics/assemble';
+import { resolveTargetNodes, surfaceCoefficients } from '../physics/assemble';
 import { analysePathLength } from '../analysis/pathLength';
 import { createDefaultScenario } from '../core/defaults';
 import { celsiusToKelvin, kelvinToCelsius } from '../core/units';
+import type { Scenario, ThermalModel } from '../core/types';
 
 const require = createRequire(import.meta.url);
 const WASM_PATH = require.resolve('occt-import-js/dist/occt-import-js.wasm');
 const STEP_PATH = fileURLToPath(new URL('../../ohisje - TBTE 2x116.step', import.meta.url));
+
+/**
+ * Convection plus radiation from the triangles that face ambient — the part of the
+ * model the mid-surface reference run is comparable to.
+ */
+function lossThroughOpenAir(
+  model: ThermalModel,
+  scenario: Scenario,
+  temperature: Float32Array,
+): { watts: number; area: number; meanExcess: number } {
+  const coefficients = surfaceCoefficients(model, scenario, temperature);
+  let watts = 0;
+  let area = 0;
+  let excessArea = 0;
+  for (let t = 0; t < model.triCount; t++) {
+    if (model.triCavity[t] > 0) continue;
+    const excess =
+      (temperature[model.tris[t * 3]] +
+        temperature[model.tris[t * 3 + 1]] +
+        temperature[model.tris[t * 3 + 2]]) /
+        3 -
+      scenario.ambient;
+    watts += (coefficients.hConv[t] + coefficients.hRad[t]) * model.triArea[t] * excess;
+    area += model.triArea[t];
+    excessArea += model.triArea[t] * excess;
+  }
+  return { watts, area, meanExcess: excessArea / area };
+}
 
 async function loadTbte() {
   const occt = await createOcctModule({
@@ -51,6 +87,7 @@ describe('TBTE housing', () => {
       console.log(
         `  ${part.name}: area ${(part.surfaceArea * 1e4).toFixed(1)} cm2,` +
           ` vol ${(part.volume * 1e9).toFixed(0)} mm3,` +
+          ` thickness ${(part.thickness * 1000).toFixed(3)} mm,` +
           ` thinness ${part.thinnessRatio.toFixed(3)} -> ${part.bodyType},` +
           ` faces ${new Set(Array.from({ length: part.triRange[1] - part.triRange[0] }, (_, i) => model.triFace[part.triRange[0] + i])).size}`,
       );
@@ -68,6 +105,13 @@ describe('TBTE housing', () => {
     expect(model.triCount).toBeGreaterThan(1000);
     // Welding must actually have collapsed the seam duplicates.
     expect(model.nodeCount).toBeLessThan(model.triCount * 3);
+
+    // The three sheet-metal parts are drawn from 1 mm sheet, and import has to read
+    // that back off their volume rather than making the user type it.
+    for (const name of ['ohisje', 'glava', 'dno']) {
+      const part = model.parts.find((p) => p.name === name);
+      expect(part?.thickness).toBeCloseTo(0.001, 4);
+    }
   }, 120_000);
 
   it('solves the reference scenario', async () => {
@@ -77,8 +121,18 @@ describe('TBTE housing', () => {
     const cavityResult = detectCavities(model);
     scenario.cavities = cavityResult.cavities.map((c) => setCavityCondition(c, 'insulated'));
     scenario.contacts = detectContacts(model);
+    let enclosedArea = 0;
+    let totalArea = 0;
+    for (let t = 0; t < model.triCount; t++) {
+      totalArea += model.triArea[t];
+      if (model.triCavity[t] > 0) enclosedArea += model.triArea[t];
+    }
     console.log(
-      'cavities:',
+      `cavities: ${scenario.cavities.length}, enclosed area` +
+        ` ${((100 * enclosedArea) / totalArea).toFixed(1)}% of ${(totalArea * 1e4).toFixed(0)} cm2`,
+    );
+    console.log(
+      '  ',
       scenario.cavities.map((c) => `${c.name} (${c.triCount} tris)`).join(', ') || 'none',
     );
     console.log(
@@ -131,6 +185,13 @@ describe('TBTE housing', () => {
       `fin length lambda: ${path.fit ? (path.fit.lambda * 1000).toFixed(1) + ' mm' : 'no fit'}` +
         `${path.fit ? ` (r2 ${path.fit.rSquared.toFixed(3)})` : ''}`,
     );
+
+    const exposed = lossThroughOpenAir(model, scenario, result.temperature);
+    console.log(
+      `open air: ${exposed.watts.toFixed(2)} W over ${(exposed.area * 1e4).toFixed(0)} cm2` +
+        ` at a mean excess of ${exposed.meanExcess.toFixed(1)} K` +
+        ` (reference: 61 W over 3194 cm2 at 22.9 K)`,
+    );
     if (result.warnings.length) console.log('warnings:', result.warnings.join(' | '));
 
     expect(result.converged).toBe(true);
@@ -138,5 +199,23 @@ describe('TBTE housing', () => {
     expect(kelvinToCelsius(result.maxTemp)).toBeCloseTo(200, 0);
     // Everything must sit between ambient and the driven temperature.
     expect(kelvinToCelsius(result.minTemp)).toBeGreaterThanOrEqual(19.9);
+
+    // Cavity detection has to find the inside of a sealed housing: inner skin, edge
+    // bands and the parts buried in it are the majority of a sheet solid's area.
+    expect(enclosedArea / totalArea).toBeGreaterThan(0.5);
+    expect(enclosedArea / totalArea).toBeLessThan(0.7);
+    // What is left is the skin that faces ambient, and it should match the whole of
+    // the reference model's mid-surface mesh — 3194 cm² — because that is the same
+    // surface. This is the structural cross-check on the cavity classification.
+    const REFERENCE_MESH_AREA = 0.3194;
+    expect(totalArea - enclosedArea).toBeGreaterThan(REFERENCE_MESH_AREA * 0.9);
+    expect(totalArea - enclosedArea).toBeLessThan(REFERENCE_MESH_AREA * 1.1);
+
+    // ...and the heat leaving that skin should match the reference's 61 W. The total
+    // is higher (~95 W) because our cavity-facing skin exists and the reference's does
+    // not: at the default 'insulated' condition it sheds another ~35 W that the
+    // reference model structurally cannot.
+    expect(exposed.watts).toBeGreaterThan(50);
+    expect(exposed.watts).toBeLessThan(72);
   }, 120_000);
 });

@@ -7,7 +7,7 @@
  * pure correlations in their own modules; this file decides where they apply.
  */
 
-import type { Scenario, Target, ThermalModel } from '../core/types';
+import type { Part, Scenario, Target, ThermalModel } from '../core/types';
 import { computeConvectionCoefficients } from './convection';
 import { resolvePart } from './materials';
 import { computeRadiationCoefficients } from './radiation';
@@ -54,6 +54,23 @@ export function buildDofMap(model: ThermalModel, scenario: Scenario): DofMap {
   }
 
   return { nodeDof, dofPart: Int32Array.from(dofPart), dofCount };
+}
+
+/**
+ * The thickness one triangle of `part` conducts through, metres.
+ *
+ * `Part.thickness` is the physical sheet thickness — what a drawing quotes and a user
+ * types. A CAD sheet-metal part is a *solid*, so its tessellation is a closed shell
+ * carrying both faces of the sheet plus the edge bands, and giving every triangle the
+ * full thickness would conduct through 2·t. Half each: two parallel shells of t/2
+ * joined around the edge bands conduct exactly t, and convect from both faces, which
+ * is what the real sheet does.
+ *
+ * An open shell (`volume === 0`) is a genuine mid-surface mesh — one shell, full
+ * thickness. Surface area is never halved: both faces really are exposed.
+ */
+export function conductionThickness(part: Part, thickness: number): number {
+  return part.volume === 0 ? thickness : thickness / 2;
 }
 
 export function partIndexOf(model: ThermalModel, partId: string): number {
@@ -258,7 +275,7 @@ export function assembleSystem(
   const insulator: boolean[] = [];
   for (const part of model.parts) {
     const resolved = resolvePart(part, scenario.partOverrides[part.id]);
-    conductance.push(resolved.material.k * resolved.thickness);
+    conductance.push(resolved.material.k * conductionThickness(part, resolved.thickness));
     insulator.push(resolved.bodyType === 'insulator');
   }
 
