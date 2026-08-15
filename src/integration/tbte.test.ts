@@ -262,14 +262,15 @@ describe('TBTE housing', () => {
     expect(exposed.watts).toBeGreaterThan(50);
     expect(exposed.watts).toBeLessThan(72);
 
-    // The balance closes far inside the solver's own 1 % alarm. What is left (~0.05 W,
-    // 5e-4 of the loss) is the contact terms: the flux across a PERFECT_CONTACT joint
-    // is conductance × a ΔT of order the Float32Array field's own resolution, so the
-    // balance cannot recover it as precisely as the matrix imposed it. Radiation
-    // contributes nothing — it is linearised per node, so the two accounts of it are
-    // the same number by algebra.
+    // This is the model the residual has to be watched on, because it is the one with
+    // PERFECT_CONTACT joints on a pinned part: eliminating that pin folds conductance ×
+    // 473 K into its neighbours' rows and inflates ‖b‖ by ~6e3, so a CG target measured
+    // against ‖b‖ buys ~6e3 less accuracy in watts than the tolerance reads as, and what
+    // CG leaves behind arrives here as unaccounted power. Judged against the applied
+    // power instead, what is left is 7.4e-4 W — the Picard radiation lag alone, the same
+    // floor the fin benchmarks sit at. Measured 7.3e-6 of the loss.
     const loss = result.balance.lostByConvection + result.balance.lostByRadiation;
-    expect(Math.abs(result.balance.residual) / loss).toBeLessThan(2e-3);
+    expect(Math.abs(result.balance.residual) / loss).toBeLessThan(5e-5);
     expect(result.warnings.join('\n')).not.toContain('Energy balance');
   }, 120_000);
 });

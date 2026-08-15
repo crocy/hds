@@ -35,12 +35,18 @@ import { conjugateGradient } from './sparse';
  * flowing through the model. The residual is never scaled or clamped away: at this
  * size it means the discretisation and the accounting disagree about real watts, and
  * every number downstream of it is suspect.
+ *
+ * Two orders of magnitude above what a converged solve reaches — measured 2e-6 on the
+ * radiating fin benchmarks and 7e-6 on the TBTE housing, both of them h_rad lagging one
+ * Picard iteration behind the field and nothing else. A looser bar than this cannot
+ * tell a solver that stopped early from one that finished.
  */
-export const ENERGY_RESIDUAL_FRACTION = 0.01;
+export const ENERGY_RESIDUAL_FRACTION = 1e-3;
 
 /**
- * Below this the residual is rounding in the Float32Array field the balance is read
- * from, not physics. Watts — and a microwatt is nothing in a natural-convection model.
+ * Absolute floor on the alarm, in watts. A model sitting at ambient has no throughput
+ * for a fraction to be taken of, and must not be called broken over the last bits of a
+ * sum of a few thousand terms.
  */
 const RESIDUAL_NOISE_FLOOR = 1e-6;
 

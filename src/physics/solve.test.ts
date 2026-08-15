@@ -484,25 +484,27 @@ describe('energy accounting', () => {
   }
 
   /**
-   * All that is left of the residual once radiation is linearised per node: the
-   * balance reads its field back out of a Float32Array, and 24-bit temperatures near
-   * 600 K cannot account for watts more finely than this. It is a property of the
-   * field's storage, not of the mesh.
+   * All that is left of the residual once radiation is linearised per node: h_rad is
+   * frozen one Picard iteration behind the field the balance then evaluates εσ(T⁴ − T∞⁴)
+   * at, so the two accounts differ by that last step's ΔT. It is a property of the outer
+   * loop's tolerance, not of the mesh.
    */
-  const FLOAT32_FIELD_NOISE = 5e-5;
+  const PICARD_LAG_NOISE = 5e-6;
 
-  it('closes to float32 noise at every mesh density, with no dx² tail left', () => {
+  it('closes to the Picard lag at every mesh density, with no dx² tail left', () => {
     // h_rad is linearised at each node's own temperature — the same temperature the
     // balance takes (T − T∞) at — so h_rad·(T − T∞) = εσ(T⁴ − T∞⁴) is an algebraic
     // identity and the two accounts of a watt cannot disagree by construction.
-    // Measured: 8.7e-6, 3.7e-7, 5.8e-7, 5.4e-8, 7.4e-7 for nx = 10 … 160, sign
-    // random and with no ordering by mesh size. Linearising at each triangle's mean
+    // Measured: 8.9e-6, 1.8e-6, 1.9e-6, 1.9e-6, 1.9e-6 for nx = 10 … 160 — flat in the
+    // mesh, as a lag in the outer loop should be. Linearising at each triangle's mean
     // corner temperature instead gave 2.0e-3 → 5.7e-4 → 1.5e-4 for nx = 40 → 160:
     // an O(dx²) discrepancy, always negative because T⁴ is convex, that only
     // refinement could shrink and that no refinement could take this far down.
-    for (const nx of [10, 20, 40, 80, 160]) {
-      expect(relativeResidualAt(nx)).toBeLessThan(FLOAT32_FIELD_NOISE);
+    for (const nx of [20, 40, 80, 160]) {
+      expect(relativeResidualAt(nx)).toBeLessThan(PICARD_LAG_NOISE);
     }
+    // The coarsest mesh takes one Picard iteration fewer, so its last step is bigger.
+    expect(relativeResidualAt(10)).toBeLessThan(2e-5);
   });
 
   it('warns loudly rather than hiding a balance that does not close', () => {
