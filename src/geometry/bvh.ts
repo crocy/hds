@@ -5,6 +5,10 @@
  * layout is chosen for that: nodes live in three flat typed arrays, triangle
  * vertices are copied into a leaf-ordered buffer, and a query allocates nothing
  * unless the caller asks for hit objects back.
+ *
+ * Two query families live here: rays (cavity parity counting) and closest point
+ * on the mesh (contact detection, which cannot assume the two parts' meshes share
+ * vertices and so has to measure a node against whole triangles).
  */
 
 import type { ThermalModel } from '../core/types';
@@ -29,6 +33,10 @@ export interface Bvh {
   triVerts: Float32Array;
   /** Traversal scratch. Queries are single-threaded and never nest, so one is enough. */
   stack: Int32Array;
+  /** Squared box distance per `stack` entry, for the nearest-box-first closest-point descent. */
+  stackDistance: Float64Array;
+  /** Closest-point-on-triangle scratch, xyz. */
+  pointScratch: Float64Array;
 }
 
 export interface RaycastOptions {
@@ -45,6 +53,35 @@ export interface BvhHit {
   triangle: number;
   /** Distance along the ray direction as supplied (metres when the direction is unit length). */
   distance: number;
+}
+
+export interface ClosestPointOptions {
+  /** Ignore triangles further than this from the query point, metres. Default Infinity. */
+  maxDistance?: number;
+  /** Original triangle index to ignore. */
+  skipTriangle?: number;
+  /**
+   * Rejects triangles by original index — contact detection uses it to skip the
+   * querying node's own part and anything not facing it. Must not itself query
+   * this BVH: the traversal stack is shared.
+   */
+  accept?: (triangle: number) => boolean;
+}
+
+/** Reusable closest-point result, so a query in a hot loop allocates nothing. */
+export interface ClosestPointResult {
+  /** Index into ThermalModel.tris, or -1 when nothing qualified. */
+  triangle: number;
+  /** Distance from the query point to `x, y, z`, metres. Infinity when nothing qualified. */
+  distance: number;
+  /** The closest point itself, on the matched triangle. */
+  x: number;
+  y: number;
+  z: number;
+}
+
+export function createClosestPointResult(): ClosestPointResult {
+  return { triangle: -1, distance: Infinity, x: 0, y: 0, z: 0 };
 }
 
 /** Growable hit sink, so a ray query in a hot loop allocates nothing. */
@@ -190,6 +227,8 @@ export function buildBvh(model: ThermalModel, options: BvhOptions = {}): Bvh {
     triCount,
     triVerts,
     stack: new Int32Array(2 * maxDepth + 8),
+    stackDistance: new Float64Array(2 * maxDepth + 8),
+    pointScratch: new Float64Array(3),
   };
 }
 
@@ -327,6 +366,209 @@ function traverseRay(
     }
   }
   return hits;
+}
+
+/**
+ * Nearest point of the mesh to (x, y, z), written into `out`.
+ *
+ * Descends nearest box first and prunes every box further away than the best
+ * triangle found so far, so a bounded query (`maxDistance`) touches only the
+ * handful of leaves around the point.
+ *
+ * Returns true when a triangle qualified.
+ */
+export function closestPointInto(
+  bvh: Bvh,
+  x: number,
+  y: number,
+  z: number,
+  out: ClosestPointResult,
+  options: ClosestPointOptions = {},
+): boolean {
+  out.triangle = -1;
+  out.distance = Infinity;
+  if (bvh.triCount === 0) return false;
+
+  const skipTriangle = options.skipTriangle ?? -1;
+  const accept = options.accept;
+  const maxDistance = options.maxDistance ?? Infinity;
+  let bestSquared = maxDistance * maxDistance;
+
+  const { bounds, offset, leafSize, triIndex, triVerts, stack, stackDistance, pointScratch } = bvh;
+  let sp = 0;
+  const rootDistance = boxDistanceSquared(bounds, 0, x, y, z);
+  if (rootDistance > bestSquared) return false;
+  stack[sp] = 0;
+  stackDistance[sp] = rootDistance;
+  sp++;
+
+  while (sp > 0) {
+    sp--;
+    // The bound tightened after this box was pushed; whatever is inside it is out of reach.
+    if (stackDistance[sp] > bestSquared) continue;
+    const node = stack[sp];
+
+    const size = leafSize[node];
+    if (size === 0) {
+      const left = node + 1;
+      const right = offset[node];
+      const leftDistance = boxDistanceSquared(bounds, left, x, y, z);
+      const rightDistance = boxDistanceSquared(bounds, right, x, y, z);
+      // Farther child first, so the nearer one pops next and tightens the bound for it.
+      const firstNode = leftDistance <= rightDistance ? right : left;
+      const firstDistance = leftDistance <= rightDistance ? rightDistance : leftDistance;
+      const secondNode = leftDistance <= rightDistance ? left : right;
+      const secondDistance = leftDistance <= rightDistance ? leftDistance : rightDistance;
+      if (firstDistance <= bestSquared) {
+        stack[sp] = firstNode;
+        stackDistance[sp] = firstDistance;
+        sp++;
+      }
+      if (secondDistance <= bestSquared) {
+        stack[sp] = secondNode;
+        stackDistance[sp] = secondDistance;
+        sp++;
+      }
+      continue;
+    }
+
+    const start = offset[node];
+    for (let k = 0; k < size; k++) {
+      const local = start + k;
+      const triangle = triIndex[local];
+      if (triangle === skipTriangle) continue;
+      if (accept && !accept(triangle)) continue;
+      closestPointOnTriangle(triVerts, local * 9, x, y, z, pointScratch);
+      const dx = pointScratch[0] - x;
+      const dy = pointScratch[1] - y;
+      const dz = pointScratch[2] - z;
+      const distanceSquared = dx * dx + dy * dy + dz * dz;
+      if (distanceSquared > bestSquared) continue;
+      bestSquared = distanceSquared;
+      out.triangle = triangle;
+      out.x = pointScratch[0];
+      out.y = pointScratch[1];
+      out.z = pointScratch[2];
+    }
+  }
+
+  if (out.triangle < 0) return false;
+  out.distance = Math.sqrt(bestSquared);
+  return true;
+}
+
+/** Allocating form of `closestPointInto`, for callers outside a hot loop. */
+export function closestPointOnMesh(
+  bvh: Bvh,
+  x: number,
+  y: number,
+  z: number,
+  options: ClosestPointOptions = {},
+): ClosestPointResult | null {
+  const out = createClosestPointResult();
+  return closestPointInto(bvh, x, y, z, out, options) ? out : null;
+}
+
+/**
+ * Closest point of one triangle to (x, y, z), written into `out` — Ericson's
+ * Voronoi-region test (Real-Time Collision Detection §5.1.5).
+ *
+ * The regions are the point of it: distance to the triangle's plane is only the
+ * answer when the projection lands inside the triangle, and two mating CAD faces
+ * meet edge-on often enough that the vertex and edge regions decide real contacts.
+ */
+export function closestPointOnTriangle(
+  verts: ArrayLike<number>,
+  at: number,
+  x: number,
+  y: number,
+  z: number,
+  out: Float64Array,
+): void {
+  const ax = verts[at];
+  const ay = verts[at + 1];
+  const az = verts[at + 2];
+  const bx = verts[at + 3];
+  const by = verts[at + 4];
+  const bz = verts[at + 5];
+  const cx = verts[at + 6];
+  const cy = verts[at + 7];
+  const cz = verts[at + 8];
+
+  const abx = bx - ax;
+  const aby = by - ay;
+  const abz = bz - az;
+  const acx = cx - ax;
+  const acy = cy - ay;
+  const acz = cz - az;
+
+  const apx = x - ax;
+  const apy = y - ay;
+  const apz = z - az;
+  const d1 = abx * apx + aby * apy + abz * apz;
+  const d2 = acx * apx + acy * apy + acz * apz;
+  if (d1 <= 0 && d2 <= 0) return writePoint(out, ax, ay, az);
+
+  const bpx = x - bx;
+  const bpy = y - by;
+  const bpz = z - bz;
+  const d3 = abx * bpx + aby * bpy + abz * bpz;
+  const d4 = acx * bpx + acy * bpy + acz * bpz;
+  if (d3 >= 0 && d4 <= d3) return writePoint(out, bx, by, bz);
+
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const v = d1 / (d1 - d3);
+    return writePoint(out, ax + abx * v, ay + aby * v, az + abz * v);
+  }
+
+  const cpx = x - cx;
+  const cpy = y - cy;
+  const cpz = z - cz;
+  const d5 = abx * cpx + aby * cpy + abz * cpz;
+  const d6 = acx * cpx + acy * cpy + acz * cpz;
+  if (d6 >= 0 && d5 <= d6) return writePoint(out, cx, cy, cz);
+
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const w = d2 / (d2 - d6);
+    return writePoint(out, ax + acx * w, ay + acy * w, az + acz * w);
+  }
+
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+    return writePoint(out, bx + (cx - bx) * w, by + (cy - by) * w, bz + (cz - bz) * w);
+  }
+
+  const denom = va + vb + vc;
+  // A degenerate (zero-area) triangle has no interior; the region tests above
+  // already covered its extent, so fall back to a vertex rather than divide by 0.
+  if (!(denom > 0)) return writePoint(out, ax, ay, az);
+  const v = vb / denom;
+  const w = vc / denom;
+  writePoint(out, ax + abx * v + acx * w, ay + aby * v + acy * w, az + abz * v + acz * w);
+}
+
+function writePoint(out: Float64Array, x: number, y: number, z: number): void {
+  out[0] = x;
+  out[1] = y;
+  out[2] = z;
+}
+
+/** Squared distance from a point to a node's box; 0 when the point is inside it. */
+function boxDistanceSquared(
+  bounds: Float32Array,
+  node: number,
+  x: number,
+  y: number,
+  z: number,
+): number {
+  const b = node * 6;
+  const dx = Math.max(bounds[b] - x, 0, x - bounds[b + 3]);
+  const dy = Math.max(bounds[b + 1] - y, 0, y - bounds[b + 4]);
+  const dz = Math.max(bounds[b + 2] - z, 0, z - bounds[b + 5]);
+  return dx * dx + dy * dy + dz * dz;
 }
 
 /** Möller–Trumbore, two-sided. Returns the ray parameter, or NaN when it misses. */

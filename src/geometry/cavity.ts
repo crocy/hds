@@ -15,12 +15,18 @@
  * Parity alone is fragile: a ray that grazes a shared edge is reported by both
  * adjacent triangles, an open shell gives an arbitrary count depending on where
  * the ray leaves it, and coincident surfaces of touching parts pile hits at the
- * same distance. Two mitigations, in this order:
+ * same distance. Four mitigations, in this order:
  *
  * 1. Hits closer together than `mergeDistance` count as one crossing, which folds
  *    a shared-edge double hit back into the single surface crossing it is.
- * 2. `rayCount` rays spread over a cone around the normal each vote, and the
- *    majority wins. One unlucky grazing ray cannot flip a triangle on its own.
+ * 2. `rayCount` rays spread over a cone around the normal each vote, and a
+ *    supermajority is needed. A triangle where the rays disagree is sitting on
+ *    geometry the parity test cannot read, and guessing there is what produced
+ *    hundreds of one-triangle cavities on the TBTE assembly.
+ * 3. The vote is then cleaned up against mesh adjacency: a triangle that disagrees
+ *    with all of its neighbours is noise, and a pinhole of open-air triangles inside
+ *    a cavity wall is what splits one real cavity into several.
+ * 4. Groups too small to be a volume — by triangle count and by area — stay open air.
  *
  * Inside-facing triangles are then grouped into cavities by flood fill across
  * shared edges. Edges are matched by welded position rather than node index, so
@@ -57,8 +63,10 @@ export const CAVITY_DEFAULTS: Record<CavityCondition, CavityConditionDefaults> =
 };
 
 export interface CavityDetectionOptions {
-  /** Rays per triangle. Odd values avoid tied votes. Default 9. */
+  /** Rays per triangle. Default 17. */
   rayCount?: number;
+  /** Fraction of rays that must agree before a triangle counts as enclosed. Default 2/3. */
+  enclosedVoteRatio?: number;
   /** Half-angle of the ray fan around the outward normal, radians. Default 60°. */
   coneAngle?: number;
   /** How far off the surface a ray starts, metres. Default 1e-5 × bbox diagonal. */
@@ -67,8 +75,12 @@ export interface CavityDetectionOptions {
   mergeDistance?: number;
   /** Position tolerance for matching shared edges during flood fill. Default 1e-6 × diagonal. */
   weldTolerance?: number;
-  /** Groups smaller than this stay open-air. Default 1 (keep everything). */
+  /** Sweeps of the adjacency cleanup over the raw vote. Default 2; 0 disables it. */
+  cleanupPasses?: number;
+  /** Groups with fewer triangles than this stay open air unless they meet minArea. Default 4. */
   minTriangles?: number;
+  /** Area, m², that keeps a group below minTriangles. Default DEFAULT_MIN_CAVITY_AREA_RATIO × mean triangle area. */
+  minArea?: number;
   /** Condition every detected cavity starts with. Default 'stillAir'. */
   condition?: CavityCondition;
   /** Reuse a BVH already built over this model. */
@@ -85,6 +97,17 @@ export interface CavityDetectionResult {
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const DEFAULT_CONE_ANGLE = Math.PI / 3;
+const DEFAULT_RAY_COUNT = 17;
+/** Two thirds, not a bare majority: a 9-vs-8 split is a coin toss, not a cavity. */
+const DEFAULT_ENCLOSED_VOTE_RATIO = 2 / 3;
+const DEFAULT_CLEANUP_PASSES = 2;
+/** A few facets is the least that can bound a volume; below that it is ray noise. */
+const DEFAULT_MIN_TRIANGLES = 4;
+/**
+ * ...unless the group is large: one facet of a big coarse pocket is a real cavity
+ * wall. Measured in mean triangle areas so it follows the mesh, not the units.
+ */
+export const DEFAULT_MIN_CAVITY_AREA_RATIO = 4;
 
 export function cavityDefaults(condition: CavityCondition): CavityConditionDefaults {
   return CAVITY_DEFAULTS[condition];
@@ -118,36 +141,51 @@ export function detectCavities(
   options: CavityDetectionOptions = {},
 ): CavityDetectionResult {
   const diagonal = boundsDiagonal(model);
-  const rayCount = Math.max(1, Math.floor(options.rayCount ?? 9));
+  const rayCount = Math.max(1, Math.floor(options.rayCount ?? DEFAULT_RAY_COUNT));
+  const voteRatio = options.enclosedVoteRatio ?? DEFAULT_ENCLOSED_VOTE_RATIO;
   const cosCone = Math.cos(options.coneAngle ?? DEFAULT_CONE_ANGLE);
   const offset = options.offset ?? Math.max(diagonal * 1e-5, 1e-9);
   const mergeDistance = options.mergeDistance ?? Math.max(diagonal * 1e-7, 1e-12);
   const weldTolerance = options.weldTolerance ?? Math.max(diagonal * 1e-6, 1e-12);
-  const minTriangles = Math.max(1, Math.floor(options.minTriangles ?? 1));
+  const cleanupPasses = Math.max(0, Math.floor(options.cleanupPasses ?? DEFAULT_CLEANUP_PASSES));
+  const minTriangles = Math.max(1, Math.floor(options.minTriangles ?? DEFAULT_MIN_TRIANGLES));
+  const minArea = options.minArea ?? meanTriangleArea(model) * DEFAULT_MIN_CAVITY_AREA_RATIO;
   const condition = options.condition ?? 'stillAir';
 
   const insideFacing = markInsideFacing(model, {
     bvh: options.bvh ?? buildBvh(model),
     rayCount,
+    minVotes: Math.max(1, Math.ceil(rayCount * voteRatio)),
     cosCone,
     offset,
     mergeDistance,
   });
 
-  const groups = groupBySharedEdge(model, insideFacing, weldTolerance);
+  const neighbours = buildTriangleNeighbours(model, weldTolerance);
+  cleanUpInsideFacing(insideFacing, neighbours, cleanupPasses);
+
+  const groups = groupByNeighbour(insideFacing, neighbours);
   const triCavity = model.triCavity;
   triCavity.fill(0);
 
+  const kept = groups
+    .map((triangles) => ({ triangles, area: groupArea(model, triangles) }))
+    .filter((group) => group.triangles.length >= minTriangles || group.area >= minArea);
+  // Biggest first, so the ids the user sees rank by significance and the cap below
+  // only ever bites the least significant volumes.
+  kept.sort((x, y) => y.area - x.area || x.triangles[0] - y.triangles[0]);
+
   const cavities: Cavity[] = [];
-  for (const group of groups) {
-    if (group.length < minTriangles) continue;
-    // Ids past 255 do not fit triCavity; the overflow lands in one shared cavity
-    // rather than being silently downgraded to open air.
+  for (const { triangles: group } of kept) {
+    // Ids past 255 do not fit triCavity. Everything past the cap shares the last
+    // id rather than wrapping onto another cavity's, and says so in its name.
     const id = Math.min(cavities.length + 1, MAX_CAVITY_ID);
     let cavity = cavities[id - 1];
     if (!cavity) {
       cavity = createCavity(id, condition);
       cavities.push(cavity);
+    } else {
+      cavity.name = `cavity ${id} (merged overflow)`;
     }
     for (const triangle of group) triCavity[triangle] = id;
     cavity.triCount += group.length;
@@ -203,13 +241,15 @@ export function refreshCavityCounts(model: ThermalModel, cavities: Cavity[]): vo
 interface FacingParameters {
   bvh: Bvh;
   rayCount: number;
+  /** Rays that must report an odd crossing count before the triangle counts as enclosed. */
+  minVotes: number;
   cosCone: number;
   offset: number;
   mergeDistance: number;
 }
 
 function markInsideFacing(model: ThermalModel, parameters: FacingParameters): Uint8Array {
-  const { bvh, rayCount, cosCone, offset, mergeDistance } = parameters;
+  const { bvh, rayCount, minVotes, cosCone, offset, mergeDistance } = parameters;
   const { nodes, tris, triNormal, triCount } = model;
   const insideFacing = new Uint8Array(triCount);
 
@@ -255,29 +295,38 @@ function markInsideFacing(model: ThermalModel, parameters: FacingParameters): Ui
       }
       if (crossings % 2 === 1) enclosedVotes++;
     }
-    insideFacing[t] = enclosedVotes * 2 > rayCount ? 1 : 0;
+    insideFacing[t] = enclosedVotes >= minVotes ? 1 : 0;
   }
   return insideFacing;
 }
 
-function groupBySharedEdge(
-  model: ThermalModel,
-  insideFacing: Uint8Array,
-  weldTolerance: number,
-): number[][] {
+/**
+ * Triangles sharing an edge, matched by welded position rather than node index so
+ * adjacency survives an unwelded tessellation and crosses parts that genuinely meet.
+ * An edge used by more than two triangles links them all — non-manifold seams are
+ * normal where parts touch.
+ */
+interface TriangleNeighbours {
+  /** Neighbour indices, `start[t]`..`start[t + 1]` per triangle. */
+  neighbour: Int32Array;
+  start: Int32Array;
+  triCount: number;
+}
+
+function buildTriangleNeighbours(model: ThermalModel, weldTolerance: number): TriangleNeighbours {
+  const { triCount, tris } = model;
   const { clusterOf, clusterCount } = clusterPoints(model.nodes, weldTolerance);
   const trianglesByEdge = new Map<number, number[]>();
+  const keys: number[] = [0, 0, 0];
   const edgeKeys = (triangle: number, out: number[]): void => {
     for (let e = 0; e < 3; e++) {
-      const p = clusterOf[model.tris[triangle * 3 + e]];
-      const q = clusterOf[model.tris[triangle * 3 + ((e + 1) % 3)]];
+      const p = clusterOf[tris[triangle * 3 + e]];
+      const q = clusterOf[tris[triangle * 3 + ((e + 1) % 3)]];
       out[e] = p < q ? p * clusterCount + q : q * clusterCount + p;
     }
   };
 
-  const keys: number[] = [0, 0, 0];
-  for (let t = 0; t < model.triCount; t++) {
-    if (!insideFacing[t]) continue;
+  for (let t = 0; t < triCount; t++) {
     edgeKeys(t, keys);
     for (const key of keys) {
       const bucket = trianglesByEdge.get(key);
@@ -286,31 +335,101 @@ function groupBySharedEdge(
     }
   }
 
-  const groupOf = new Int32Array(model.triCount).fill(-1);
+  const lists: number[][] = [];
+  const start = new Int32Array(triCount + 1);
+  let total = 0;
+  for (let t = 0; t < triCount; t++) {
+    const list: number[] = [];
+    edgeKeys(t, keys);
+    for (const key of keys) {
+      for (const other of trianglesByEdge.get(key) ?? []) {
+        if (other !== t && !list.includes(other)) list.push(other);
+      }
+    }
+    lists.push(list);
+    total += list.length;
+    start[t + 1] = total;
+  }
+
+  const neighbour = new Int32Array(total);
+  for (let t = 0; t < triCount; t++) neighbour.set(lists[t], start[t]);
+  return { neighbour, start, triCount };
+}
+
+/**
+ * Morphological open-then-close of the raw vote against mesh adjacency.
+ *
+ * A triangle that no neighbour agrees with is ray noise, and one misclassified
+ * facet in a cavity wall splits the cavity in two, so both directions are needed.
+ * Bounded passes keep a fill from creeping across an open surface.
+ */
+function cleanUpInsideFacing(
+  insideFacing: Uint8Array,
+  neighbours: TriangleNeighbours,
+  passes: number,
+): void {
+  const { neighbour, start, triCount } = neighbours;
+  const next = new Uint8Array(triCount);
+  for (let pass = 0; pass < passes; pass++) {
+    next.set(insideFacing);
+    let changed = false;
+    for (let t = 0; t < triCount; t++) {
+      const from = start[t];
+      const to = start[t + 1];
+      if (to === from) continue;
+      let agreeing = 0;
+      for (let i = from; i < to; i++) if (insideFacing[neighbour[i]]) agreeing++;
+      const total = to - from;
+      if (insideFacing[t] && agreeing === 0) {
+        next[t] = 0;
+        changed = true;
+      } else if (!insideFacing[t] && agreeing >= 2 && agreeing * 2 > total) {
+        next[t] = 1;
+        changed = true;
+      }
+    }
+    insideFacing.set(next);
+    if (!changed) break;
+  }
+}
+
+/** Flood fill of the inside-facing triangles across shared edges. */
+function groupByNeighbour(insideFacing: Uint8Array, neighbours: TriangleNeighbours): number[][] {
+  const { neighbour, start, triCount } = neighbours;
+  const grouped = new Uint8Array(triCount);
   const groups: number[][] = [];
   const stack: number[] = [];
-  for (let seed = 0; seed < model.triCount; seed++) {
-    if (!insideFacing[seed] || groupOf[seed] >= 0) continue;
+  for (let seed = 0; seed < triCount; seed++) {
+    if (!insideFacing[seed] || grouped[seed]) continue;
     const group: number[] = [];
-    groupOf[seed] = groups.length;
+    grouped[seed] = 1;
     stack.push(seed);
     while (stack.length > 0) {
       const triangle = stack.pop() as number;
       group.push(triangle);
-      edgeKeys(triangle, keys);
-      for (const key of keys) {
-        const bucket = trianglesByEdge.get(key);
-        if (!bucket) continue;
-        for (const neighbour of bucket) {
-          if (groupOf[neighbour] >= 0) continue;
-          groupOf[neighbour] = groups.length;
-          stack.push(neighbour);
-        }
+      for (let i = start[triangle]; i < start[triangle + 1]; i++) {
+        const other = neighbour[i];
+        if (!insideFacing[other] || grouped[other]) continue;
+        grouped[other] = 1;
+        stack.push(other);
       }
     }
     groups.push(group);
   }
   return groups;
+}
+
+function groupArea(model: ThermalModel, group: number[]): number {
+  let area = 0;
+  for (const triangle of group) area += model.triArea[triangle];
+  return area;
+}
+
+function meanTriangleArea(model: ThermalModel): number {
+  if (model.triCount === 0) return 0;
+  let total = 0;
+  for (let t = 0; t < model.triCount; t++) total += model.triArea[t];
+  return total / model.triCount;
 }
 
 function requireCavity(cavities: Cavity[], cavityId: number): void {
