@@ -19,8 +19,13 @@ Other commands: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`.
 
 Steady-state conduction across the tessellated surface — each triangle carries
 `k × thickness` — with natural convection and radiation to ambient at every node.
-Parts are joined by explicit contacts carrying a finite conductance. Enclosed cavities
-are detected and given their own convection condition.
+Parts are joined by explicit contacts carrying a finite conductance.
+
+Enclosed cavities are detected by occlusion and each holds its own trapped-air
+temperature, solved as a real unknown alongside the nodes. A sealed pocket is therefore a
+thermal path between the walls that bound it rather than somewhere heat can vanish into:
+what flows in flows back out, and the cavities panel reports each pocket's air
+temperature and shows that its books balanced.
 
 Sub-ambient simulation works without a separate mode: the convection correlations branch
 on the *sign* of ΔT, so a cold plate facing up takes the same branch as a hot plate
@@ -50,5 +55,26 @@ interface.
 
 The solver is checked against analytical results — a 1D fin, an isothermal plate, and a
 two-part contact with known series resistance — and energy conservation is asserted on
-every solve. There is also a regression test against a known-good prior result for the
-TBTE housing in this repo: ≈61 W total loss and a ≈46 mm fin length.
+every solve. Each sealed cavity's net flow is asserted to be zero too, which is what
+stops a trapped pocket quietly becoming a heat sink.
+
+There is also an end-to-end test against the TBTE housing in this repo. Read its header
+before trusting any single number from it: the known-good prior run is a **mid-surface**
+model carrying one side of each sheet, so its 61 W is the loss from the skin facing
+ambient and is *not* comparable to our total. We solve the sheet solid the CAD actually
+contains, and report 82.5 W — all of it through that same skin, since a sealed pocket has
+no other exit. The gap is a heat path the reference mesh has no interior to carry: the
+buried block radiating across the pocket.
+
+Two caveats worth knowing before reading the plots:
+
+- The fin length the test prints (97.4 mm) is **not asserted** and does not match the
+  ≈46 mm this file claimed for a long time. It measured 93.0 mm before cavities gained an
+  air node, so the drift predates that work and is unexplained. Treat it as an open
+  question, not a verified result.
+- The reference run no longer bounds the total from above. Per-cavity conservation is
+  what holds the model honest in its place — a check of internal consistency, which is a
+  weaker thing than agreement with reality.
+
+See [the cavity air node spec](docs/superpowers/specs/2026-08-15-cavity-air-node-design.md)
+for the full reasoning, including the one known approximation.
