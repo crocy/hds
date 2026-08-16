@@ -41,6 +41,8 @@ import {
   resolveScaleRange,
   sectionExtent,
   targetKey,
+  BACKGROUND_COLORS,
+  NO_DATA_COLORS,
   OVERLAY_KINDS,
   SELECTION_MODE_HOTKEYS,
   type ResolvedColorScale,
@@ -68,14 +70,17 @@ import { missingLibraryIds, registerCustomLibrary } from '@/ui/state/materialLib
 import { ProjectProvider, useDispatch, useProject } from '@/ui/state/projectStore';
 import { SolveRunner, SUPERSEDED_SOLVE } from '@/ui/state/solveClient';
 import { useThermalScene } from '@/ui/state/useThermalScene';
+import { ThemeProvider, useTheme } from '@/ui/theme';
 import type { ProjectState } from '@/ui/state/projectReducer';
 import type { ViewerState } from '@/ui/state/viewerState';
 
 export function App() {
   return (
-    <ProjectProvider>
-      <Workspace />
-    </ProjectProvider>
+    <ThemeProvider>
+      <ProjectProvider>
+        <Workspace />
+      </ProjectProvider>
+    </ThemeProvider>
   );
 }
 
@@ -85,6 +90,7 @@ const SLICE_DEBOUNCE_MS = 140;
 function Workspace() {
   const state = useProject();
   const dispatch = useDispatch();
+  const { resolved } = useTheme();
   const { model, modelRevision, scenario, viewer, solve, source, importSettings } = state;
   const section = viewer.section;
 
@@ -207,6 +213,15 @@ function Workspace() {
     if (!scene) return;
     for (const kind of OVERLAY_KINDS) scene.setOverlayVisible(kind, viewer.overlays[kind]);
   }, [scene, viewer.overlays]);
+
+  // -- theme ----------------------------------------------------------------
+  // Not repeated in `applyViewerState`: the scene holds both colours itself, and the
+  // mesh `setModel` rebuilds is painted from the one it is already holding.
+  useEffect(() => {
+    if (!scene) return;
+    scene.setBackground(BACKGROUND_COLORS[resolved]);
+    scene.setNoDataColor(NO_DATA_COLORS[resolved]);
+  }, [scene, resolved]);
 
   // -- section plane --------------------------------------------------------
   useEffect(() => {

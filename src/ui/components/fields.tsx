@@ -217,6 +217,11 @@ export interface ButtonGroupProps<T extends string> {
   disabled?: boolean;
 }
 
+/**
+ * One-of-several as toggle buttons. The selection is announced with `aria-pressed`
+ * rather than a radiogroup, because radio semantics promise the arrow-key roving-focus
+ * model that this — a plain row of individually tabbable buttons — does not implement.
+ */
 export function ButtonGroup<T extends string>({
   value,
   options,
@@ -225,18 +230,22 @@ export function ButtonGroup<T extends string>({
 }: ButtonGroupProps<T>) {
   return (
     <div className="button-group">
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          title={option.title}
-          disabled={disabled}
-          className={option.value === value ? 'on' : undefined}
-          onClick={() => onChange(option.value)}
-        >
-          {option.label}
-        </button>
-      ))}
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            title={option.title}
+            disabled={disabled}
+            className={selected ? 'on' : undefined}
+            aria-pressed={selected}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
