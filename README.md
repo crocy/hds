@@ -68,10 +68,13 @@ buried block radiating across the pocket.
 
 Two caveats worth knowing before reading the plots:
 
-- The fin length the test prints (97.4 mm) is **not asserted** and does not match the
-  ≈46 mm this file claimed for a long time. It measured 93.0 mm before cavities gained an
-  air node, so the drift predates that work and is unexplained. Treat it as an open
-  question, not a verified result.
+- The fin length the test prints (97.4 mm) is **not asserted**. It does not match the
+  ≈46 mm this file claimed for a long time, but that figure was never comparable: fitting
+  the same decay over the reference's *own* field gives 104 mm across the whole model and
+  34–45 mm restricted to the first 50–100 mm. So ≈46 mm is a near-field fit and ours is a
+  whole-model one — section 10 of the design spec has the numbers. What is genuinely open
+  is the drift within our own numbers, 93.0 mm before cavities gained an air node against
+  97.4 mm after.
 - The reference run no longer bounds the total from above. Per-cavity conservation is
   what holds the model honest in its place — a check of internal consistency, which is a
   weaker thing than agreement with reality.
