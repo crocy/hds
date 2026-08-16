@@ -32,17 +32,13 @@ import {
   niceInterval,
 } from './scales';
 import { markCssColor } from './theme';
+import { usePlotPalette } from './usePlotPalette';
 import { useElementSize } from './useElementSize';
 import './plots.css';
 
 const HISTOGRAM_MARGINS = { ...DEFAULT_PLOT_MARGINS, left: 58 };
 /** Bars under the limit are still data, just not the answer. */
 const BELOW_THRESHOLD_OPACITY = 0.6;
-/**
- * The bars carry the colormap lifted off the panel (`markColor`); the hairline is
- * what still separates two neighbouring bins of nearly the same temperature.
- */
-const BAR_EDGE = 'rgba(232, 234, 240, 0.22)';
 
 export interface ThresholdPlotProps {
   result: ThresholdResult | null;
@@ -71,6 +67,7 @@ export function ThresholdPlot({
 }: ThresholdPlotProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const size = useElementSize(bodyRef);
+  const palette = usePlotPalette();
 
   const bars = useMemo(() => (result ? buildBars(result) : []), [result]);
 
@@ -188,8 +185,12 @@ export function ThresholdPlot({
                 y={top}
                 width={width}
                 height={barHeight}
-                fill={markCssColor(colorMap, normalize(bar.centreKelvin, colorMin, colorMax))}
-                stroke={BAR_EDGE}
+                fill={markCssColor(
+                  colorMap,
+                  normalize(bar.centreKelvin, colorMin, colorMax),
+                  palette.mark,
+                )}
+                stroke={palette.barEdge}
                 strokeWidth={0.5}
                 opacity={above ? 1 : BELOW_THRESHOLD_OPACITY}
               />

@@ -5,7 +5,7 @@
  * The grid goes to canvas as an ImageData scaled up with smoothing off, so the
  * cells stay visibly discrete: this field is an approximation that ignores
  * out-of-plane flux, and smoothing it into a continuous wash would oversell it.
- * Contours are drawn as white strokes over the fill, axes in SVG.
+ * Contours are stroked over the fill in the palette's contour ink, axes in SVG.
  */
 
 import { useCallback, useMemo, useRef } from 'react';
@@ -25,7 +25,7 @@ import {
   scaleOverRawUnits,
   scaleValue,
 } from './scales';
-import { PLOT_COLORS } from './theme';
+import { usePlotPalette } from './usePlotPalette';
 import { useElementSize } from './useElementSize';
 import './plots.css';
 
@@ -62,6 +62,7 @@ export function SectionFieldPlot({
 }: SectionFieldPlotProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const size = useElementSize(bodyRef);
+  const palette = usePlotPalette();
 
   const dataRange = useMemo(() => (field ? finiteExtent(field.values) : null), [field]);
   const rangeMin = range ? range[0] : (dataRange?.min ?? 0);
@@ -119,7 +120,7 @@ export function SectionFieldPlot({
       context.drawImage(tile, left, top, rightEdge - left, bottom - top);
 
       if (showContours) {
-        context.strokeStyle = PLOT_COLORS.contour;
+        context.strokeStyle = palette.contour;
         context.lineWidth = CONTOUR_WIDTH;
         context.beginPath();
         for (const contour of field.contours) {
@@ -136,7 +137,9 @@ export function SectionFieldPlot({
       }
       context.restore();
     },
-    [field, colorMap, rangeMin, rangeMax, showContours],
+    // `palette` is one object per theme, so a switch redraws the contours rather
+    // than leaving the previous theme's ink on the canvas.
+    [field, colorMap, rangeMin, rangeMax, showContours, palette],
   );
 
   const empty = !field

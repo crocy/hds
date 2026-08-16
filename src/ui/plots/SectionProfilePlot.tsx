@@ -31,7 +31,8 @@ import {
   niceInterval,
   scaleOverRawUnits,
 } from './scales';
-import { PLOT_COLORS, seriesColor } from './theme';
+import { seriesColor } from './theme';
+import { usePlotPalette } from './usePlotPalette';
 import { useElementSize } from './useElementSize';
 import './plots.css';
 
@@ -73,6 +74,7 @@ export function SectionProfilePlot({
 }: SectionProfilePlotProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const size = useElementSize(bodyRef);
+  const palette = usePlotPalette();
 
   // A part can cross the plane more than once; each loop is its own line but they
   // share one colour and one legend entry, because they are one part.
@@ -122,10 +124,12 @@ export function SectionProfilePlot({
     const tempScale = scaleOverRawUnits(geometry.y, 1, ABSOLUTE_ZERO_C);
     return polylines.map((line, index) => ({
       key: `${line.partId}-${index}`,
-      color: seriesColor(partOrder.get(line.partId) ?? index),
+      color: seriesColor(partOrder.get(line.partId) ?? index, palette.series),
       d: polylinePath(interleave(line.arcLength, line.temperature), arcScale, tempScale),
     }));
-  }, [geometry, polylines, partOrder]);
+    // `palette` is one object per theme, so a switch rebuilds the paths instead of
+    // leaving the previous theme's line colours baked into this memo.
+  }, [geometry, polylines, partOrder, palette]);
 
   return (
     <PlotFrame
@@ -156,7 +160,10 @@ export function SectionProfilePlot({
           >
             {[...partOrder.entries()].map(([partId, index]) => (
               <span key={partId} className="hds-plot__legend-row">
-                <span className="hds-plot__swatch" style={{ background: seriesColor(index) }} />
+                <span
+                  className="hds-plot__swatch"
+                  style={{ background: seriesColor(index, palette.series) }}
+                />
                 {partNames?.[partId] ?? partId}
               </span>
             ))}
@@ -252,6 +259,7 @@ interface SpanShadeProps {
 }
 
 function SpanShade({ geometry, span }: SpanShadeProps) {
+  const palette = usePlotPalette();
   const { area } = geometry;
   const right = area.x + area.width;
   const from = geometry.px(metresToMillimetres(Math.min(span.from, span.to)));
@@ -269,7 +277,7 @@ function SpanShade({ geometry, span }: SpanShadeProps) {
         y={area.y}
         width={edge - left}
         height={area.height}
-        fill={PLOT_COLORS.accent}
+        fill={palette.accent}
         opacity={0.1}
       />
       {span.label && (

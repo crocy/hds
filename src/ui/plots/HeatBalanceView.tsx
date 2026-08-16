@@ -15,7 +15,7 @@
 import type { HeatBalance } from '@/core/types';
 import { summariseHeatBalance, type HeatBalanceSummary } from './balanceSummary';
 import { formatPercent, formatWatts } from './format';
-import { PLOT_COLORS } from './theme';
+import { usePlotPalette } from './usePlotPalette';
 import './plots.css';
 
 export interface HeatBalanceViewProps {
@@ -33,6 +33,8 @@ export function HeatBalanceView({
   contactNames,
   className,
 }: HeatBalanceViewProps) {
+  const palette = usePlotPalette();
+
   if (!balance) {
     return (
       <div className={className ? `hds-balance ${className}` : 'hds-balance'}>
@@ -61,24 +63,24 @@ export function HeatBalanceView({
             className="hds-balance__bar-segment"
             style={{
               width: `${summary.convectionShare * 100}%`,
-              background: PLOT_COLORS.convection,
+              background: palette.convection,
             }}
           />
           <span
             className="hds-balance__bar-segment"
             style={{
               width: `${summary.radiationShare * 100}%`,
-              background: PLOT_COLORS.radiation,
+              background: palette.radiation,
             }}
           />
         </div>
         <div className="hds-balance__keys">
           <span className="hds-balance__key">
-            <span className="hds-balance__dot" style={{ background: PLOT_COLORS.convection }} />
+            <span className="hds-balance__dot" style={{ background: palette.convection }} />
             convection {formatWatts(summary.convection)} ({formatPercent(summary.convectionShare)})
           </span>
           <span className="hds-balance__key">
-            <span className="hds-balance__dot" style={{ background: PLOT_COLORS.radiation }} />
+            <span className="hds-balance__dot" style={{ background: palette.radiation }} />
             radiation {formatWatts(summary.radiation)} ({formatPercent(summary.radiationShare)})
           </span>
         </div>
@@ -126,6 +128,7 @@ interface PartRowProps {
 }
 
 function PartRow({ name, part }: PartRowProps) {
+  const palette = usePlotPalette();
   const convectionWidth = part.barFraction * part.convectionFraction * 100;
   const radiationWidth = part.barFraction * (1 - part.convectionFraction) * 100;
   return (
@@ -136,11 +139,11 @@ function PartRow({ name, part }: PartRowProps) {
       <span className="hds-balance__bar hds-balance__bar--thin">
         <span
           className="hds-balance__bar-segment"
-          style={{ width: `${convectionWidth}%`, background: PLOT_COLORS.convection }}
+          style={{ width: `${convectionWidth}%`, background: palette.convection }}
         />
         <span
           className="hds-balance__bar-segment"
-          style={{ width: `${radiationWidth}%`, background: PLOT_COLORS.radiation }}
+          style={{ width: `${radiationWidth}%`, background: palette.radiation }}
         />
       </span>
       <span className="hds-balance__value">{formatWatts(part.lost)}</span>

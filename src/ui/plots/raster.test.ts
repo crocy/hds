@@ -3,7 +3,10 @@ import { CELL_CAVITY, CELL_OUTSIDE, CELL_SHELL } from '@/core/types';
 import { normalize, sample } from '@/viewer/colormap';
 import { createRgbaBuffer, fillRgbaBuffer, rasteriseField, rasteriseScatter } from './raster';
 import { makeScale, type LinearScale } from './scales';
-import { markColor, PLOT_PANEL_RGB } from './theme';
+import { markColor, plotPalette } from './theme';
+
+/** The rasterisers are theme-agnostic; the dark palette is what the plots ship with by default. */
+const DARK = plotPalette('dark');
 
 function pixel(buffer: ReturnType<typeof createRgbaBuffer>, x: number, y: number) {
   const offset = (y * buffer.width + x) * 4;
@@ -19,9 +22,9 @@ function expectedColor(map: 'inferno', value: number, min: number, max: number) 
   return sample(map, normalize(value, min, max)).map((c) => Math.round(c * 255));
 }
 
-/** Points carry the lifted colormap, so the cold end never lands on the panel. */
+/** Points carry the colormap blended clear of the panel, so no end of it lands on the ground. */
 function expectedPointColor(map: 'inferno', value: number, min: number, max: number) {
-  return markColor(map, normalize(value, min, max)).map((c) => Math.round(c * 255));
+  return markColor(map, normalize(value, min, max), DARK.mark).map((c) => Math.round(c * 255));
 }
 
 describe('rasteriseField', () => {
@@ -109,7 +112,14 @@ describe('fillRgbaBuffer', () => {
 });
 
 describe('rasteriseScatter', () => {
-  const style = { map: 'inferno' as const, min: 300, max: 400, alpha: 1, radius: 0 };
+  const style = {
+    map: 'inferno' as const,
+    min: 300,
+    max: 400,
+    alpha: 1,
+    radius: 0,
+    mark: DARK.mark,
+  };
   const identity: LinearScale = makeScale({ min: 0, max: 10 }, 0, 10);
 
   it('places a point at the pixel its scales map to, in the colormap colour', () => {
@@ -186,7 +196,7 @@ describe('rasteriseScatter', () => {
 
   it('keeps the coldest point clear of the panel it is drawn on', () => {
     const buffer = createRgbaBuffer(4, 4);
-    fillRgbaBuffer(buffer, PLOT_PANEL_RGB);
+    fillRgbaBuffer(buffer, DARK.panelRgb);
     rasteriseScatter(buffer, [1], [1], [300], identity, identity, style);
     const point = pixel(buffer, 1, 1);
     const panel = pixel(buffer, 0, 0);
@@ -196,6 +206,20 @@ describe('rasteriseScatter', () => {
     for (let channel = 0; channel < 3; channel++) {
       expect(point[channel]).toBeGreaterThan(panel[channel] + 15);
     }
+  });
+
+  it('takes its lift from the style, so the two themes rasterise differently', () => {
+    const light = plotPalette('light');
+    const onDark = createRgbaBuffer(4, 4);
+    fillRgbaBuffer(onDark, DARK.panelRgb);
+    rasteriseScatter(onDark, [1], [1], [400], identity, identity, style);
+    const onLight = createRgbaBuffer(4, 4);
+    fillRgbaBuffer(onLight, light.panelRgb);
+    rasteriseScatter(onLight, [1], [1], [400], identity, identity, {
+      ...style,
+      mark: light.mark,
+    });
+    expect([...onLight.data]).not.toEqual([...onDark.data]);
   });
 
   it('draws nothing at zero opacity', () => {

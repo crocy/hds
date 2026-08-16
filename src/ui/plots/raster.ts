@@ -10,15 +10,16 @@
  * Colour comes from `viewer/colormap` so the plots and the 3D view speak one
  * colour language. `viewer/colormap` is imported directly rather than through the
  * `@/viewer` facade, which would pull three.js into the plot bundle. Scatter points
- * go through `markColor`, which lifts that map's near-black cold end off the panel;
- * the field fill does not, because it covers the panel and carries its own ramp.
+ * go through `markColor`, which blends whichever end of that map the current
+ * panel would swallow away from it; the field fill does not, because it covers the
+ * panel and carries its own ramp.
  */
 
 import type { ColormapId } from '@/core/types';
 import { CELL_OUTSIDE } from '@/core/types';
 import { normalize, sample } from '@/viewer/colormap';
 import { scaleValue, type LinearScale } from './scales';
-import { markColor } from './theme';
+import { markColor, type MarkContrast } from './theme';
 
 export interface RgbaBuffer {
   /** Backed by a plain ArrayBuffer, so it can be handed straight to `new ImageData`. */
@@ -114,6 +115,8 @@ export interface ScatterStyle extends ColorRange {
   alpha: number;
   /** Half-size of the square stamp in buffer pixels. 0 draws a single pixel. */
   radius: number;
+  /** The active theme's rule for keeping a point clear of the panel. */
+  mark: MarkContrast;
 }
 
 /**
@@ -177,7 +180,7 @@ export function rasteriseScatter(
     if (centreX + radius < 0 || centreX - radius >= width) continue;
     if (centreY + radius < 0 || centreY - radius >= height) continue;
 
-    const [r, g, b] = markColor(style.map, normalize(value[i], style.min, style.max));
+    const [r, g, b] = markColor(style.map, normalize(value[i], style.min, style.max), style.mark);
     const left = Math.max(0, centreX - radius);
     const right = Math.min(width - 1, centreX + radius);
     const top = Math.max(0, centreY - radius);

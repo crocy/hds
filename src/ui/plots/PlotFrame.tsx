@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { clamp, type PlotGeometry, scaleValue, type LinearScale, type PlotArea } from './scales';
-import { PLOT_COLORS, PLOT_PANEL } from './theme';
+import { usePlotPalette } from './usePlotPalette';
 
 /** Retina is worth it; a 3× phone screen is not, for a 100k-point cloud. */
 const MAX_DEVICE_PIXEL_RATIO = 2;
@@ -125,8 +125,11 @@ function PlotCanvas({ geometry, paint }: PlotCanvasProps) {
  * so a plot with one paints its own ground into the pixel buffer instead.
  */
 export function PlotPanel({ geometry }: { geometry: PlotGeometry }) {
+  const palette = usePlotPalette();
   const { area } = geometry;
-  return <rect x={area.x} y={area.y} width={area.width} height={area.height} fill={PLOT_PANEL} />;
+  return (
+    <rect x={area.x} y={area.y} width={area.width} height={area.height} fill={palette.panel} />
+  );
 }
 
 export type PlotGrid = 'none' | 'x' | 'y' | 'both';
@@ -152,6 +155,7 @@ export function PlotAxes({
   yLabel,
   grid = 'none',
 }: PlotAxesProps) {
+  const palette = usePlotPalette();
   const { area } = geometry;
   const bottom = area.y + area.height;
   const right = area.x + area.width;
@@ -168,7 +172,7 @@ export function PlotAxes({
             x2={right}
             y1={geometry.py(tick)}
             y2={geometry.py(tick)}
-            stroke={PLOT_COLORS.grid}
+            stroke={palette.grid}
           />
         ))}
       {showXGrid &&
@@ -179,7 +183,7 @@ export function PlotAxes({
             x2={geometry.px(tick)}
             y1={area.y}
             y2={bottom}
-            stroke={PLOT_COLORS.grid}
+            stroke={palette.grid}
           />
         ))}
 
@@ -189,7 +193,7 @@ export function PlotAxes({
         width={area.width}
         height={area.height}
         fill="none"
-        stroke={PLOT_COLORS.axis}
+        stroke={palette.axis}
       />
 
       {xTicks.map((tick) => (
@@ -199,7 +203,7 @@ export function PlotAxes({
             x2={geometry.px(tick)}
             y1={bottom}
             y2={bottom + 4}
-            stroke={PLOT_COLORS.axis}
+            stroke={palette.axis}
           />
           <text
             className="hds-plot__tick"
@@ -219,7 +223,7 @@ export function PlotAxes({
             x2={area.x}
             y1={geometry.py(tick)}
             y2={geometry.py(tick)}
-            stroke={PLOT_COLORS.axis}
+            stroke={palette.axis}
           />
           <text
             className="hds-plot__tick"
@@ -266,6 +270,7 @@ export interface ThresholdMarkerProps {
 
 /** The user's limit line — dotted red, labelled inside the plot, as in the reference. */
 export function ThresholdMarker({ geometry, value, orientation, label }: ThresholdMarkerProps) {
+  const palette = usePlotPalette();
   const { area } = geometry;
   const right = area.x + area.width;
   const bottom = area.y + area.height;
@@ -280,7 +285,7 @@ export function ThresholdMarker({ geometry, value, orientation, label }: Thresho
           x2={right}
           y1={y}
           y2={y}
-          stroke={PLOT_COLORS.threshold}
+          stroke={palette.threshold}
           strokeDasharray="2 3"
         />
         {label && (
@@ -301,7 +306,7 @@ export function ThresholdMarker({ geometry, value, orientation, label }: Thresho
         x2={x}
         y1={area.y}
         y2={bottom}
-        stroke={PLOT_COLORS.threshold}
+        stroke={palette.threshold}
         strokeDasharray="2 3"
       />
       {label && (

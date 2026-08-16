@@ -44,7 +44,8 @@ import {
   sampleDecayCurve,
   scaleOverRawUnits,
 } from './scales';
-import { approximateTextWidth, PLOT_COLORS, PLOT_PANEL_RGB } from './theme';
+import { approximateTextWidth } from './theme';
+import { usePlotPalette } from './usePlotPalette';
 import { useElementSize } from './useElementSize';
 import './plots.css';
 
@@ -102,6 +103,7 @@ export function PathLengthPlot({
 }: PathLengthPlotProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const size = useElementSize(bodyRef);
+  const palette = usePlotPalette();
 
   const extent = useMemo(
     () => (result && temperature ? finitePairExtent(result.distance, temperature) : null),
@@ -149,7 +151,7 @@ export function PathLengthPlot({
       const buffer = createRgbaBuffer(bufferWidth, bufferHeight);
       // The scatter *is* the evidence, so it gets the panel to itself rather than
       // the blurred 3D view the dock is translucent over.
-      fillRgbaBuffer(buffer, PLOT_PANEL_RGB);
+      fillRgbaBuffer(buffer, palette.panelRgb);
 
       // Scales over the raw arrays: metres and kelvin in, buffer pixels out, so
       // 100k values need no converted copy.
@@ -162,6 +164,7 @@ export function PathLengthPlot({
         max: colorMax,
         alpha: POINT_ALPHA,
         radius: stampRadius(ratio),
+        mark: palette.mark,
       });
 
       // putImageData ignores the canvas transform, so the offset is in device pixels.
@@ -171,7 +174,9 @@ export function PathLengthPlot({
         Math.round(plot.area.y * ratio),
       );
     },
-    [distances, temperature, xDomain, yDomain, colorMap, colorMin, colorMax],
+    // `palette` is one object per theme, so a switch invalidates the paint and the
+    // buffer is redrawn instead of leaving a stale raster on the canvas.
+    [distances, temperature, xDomain, yDomain, colorMap, colorMin, colorMax, palette],
   );
 
   const empty = !result || !temperature ? NO_SOLVE : !extent ? NO_REACHABLE_NODES : null;
@@ -231,16 +236,16 @@ export function PathLengthPlot({
         geometry && !empty && (fit || referenceDecay) ? (
           <div className="hds-plot__legend" style={legendInset(geometry, 'top-right')}>
             {fit && (
-              <span className="hds-plot__legend-row" style={{ color: PLOT_COLORS.accent }}>
-                <span className="hds-plot__swatch" style={{ background: PLOT_COLORS.accent }} />
+              <span className="hds-plot__legend-row" style={{ color: palette.accent }}>
+                <span className="hds-plot__swatch" style={{ background: palette.accent }} />
                 fit: {formatDecayExpression(fit)}
               </span>
             )}
             {referenceDecay && (
-              <span className="hds-plot__legend-row" style={{ color: PLOT_COLORS.reference }}>
+              <span className="hds-plot__legend-row" style={{ color: palette.reference }}>
                 <span
                   className="hds-plot__swatch hds-plot__swatch--dashed"
-                  style={{ color: PLOT_COLORS.reference }}
+                  style={{ color: palette.reference }}
                 />
                 {referenceDecay.label}
               </span>
@@ -264,14 +269,12 @@ export function PathLengthPlot({
             <path
               d={referencePath}
               fill="none"
-              stroke={PLOT_COLORS.reference}
+              stroke={palette.reference}
               strokeWidth={1.6}
               strokeDasharray="5 4"
             />
           )}
-          {fitPath && (
-            <path d={fitPath} fill="none" stroke={PLOT_COLORS.accent} strokeWidth={1.9} />
-          )}
+          {fitPath && <path d={fitPath} fill="none" stroke={palette.accent} strokeWidth={1.9} />}
           {threshold != null && (
             <ThresholdMarker
               geometry={geometry}
@@ -289,8 +292,8 @@ export function PathLengthPlot({
 
 /**
  * Half-size of a point in buffer pixels, chosen so a node covers about three CSS
- * pixels whatever the display's density — a single device pixel is invisible on the
- * dark panel, and a cloud of 5k nodes is far sparser than the 100k this can take.
+ * pixels whatever the display's density — a single device pixel is too faint to
+ * find, and a cloud of 5k nodes is far sparser than the 100k this can take.
  */
 function stampRadius(devicePixelRatio: number): number {
   return Math.max(1, Math.round(devicePixelRatio));
@@ -348,6 +351,7 @@ interface AnnotationCalloutProps {
 }
 
 function AnnotationCallout({ geometry, marked }: AnnotationCalloutProps) {
+  const palette = usePlotPalette();
   const pointX = geometry.px(metresToMillimetres(marked.distance));
   const pointY = geometry.py(marked.temperature + ABSOLUTE_ZERO_C);
   if (!Number.isFinite(pointX) || !Number.isFinite(pointY)) return null;
@@ -366,17 +370,10 @@ function AnnotationCallout({ geometry, marked }: AnnotationCalloutProps) {
         y1={pointY}
         x2={placement.leaderX}
         y2={placement.leaderY}
-        stroke={PLOT_COLORS.accent}
+        stroke={palette.accent}
         strokeWidth={1.2}
       />
-      <circle
-        cx={pointX}
-        cy={pointY}
-        r={5}
-        fill="none"
-        stroke={PLOT_COLORS.accent}
-        strokeWidth={1.6}
-      />
+      <circle cx={pointX} cy={pointY} r={5} fill="none" stroke={palette.accent} strokeWidth={1.6} />
       {/* A halo behind the text, so the callout stays legible over the dense cloud. */}
       <text
         className="hds-plot__callout hds-plot__callout--halo"
