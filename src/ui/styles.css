@@ -1,7 +1,11 @@
 /**
- * Visual language taken from `thermal_model_3d.html`: near-black background,
- * translucent blurred panels, one accent blue, tabular numerals everywhere a value
- * is read rather than prose.
+ * Visual language taken from `thermal_model_3d.html`: translucent blurred panels,
+ * one accent blue, tabular numerals everywhere a value is read rather than prose.
+ *
+ * Every colour lives in `:root`, which holds the dark look; `:root[data-theme='light']`
+ * overrides the same names, so no rule below should carry a literal. `data-theme` is
+ * set before first paint by the inline script in `index.html`, then owned by
+ * `ThemeProvider`.
  */
 
 :root {
@@ -12,13 +16,70 @@
   --border: #2c2c36;
   --border-strong: #3a3a46;
   --text: #e8eaf0;
+  --text-strong: #ffffff;
   --muted: #8f92a0;
   --dim: #6a6d7a;
   --accent: #2563a8;
   --accent-edge: #3b82d6;
+  /* On the accent fill, so it stays white in both themes. */
+  --accent-text: #ffffff;
   --warning: #f2b04a;
   --error: #ff6b6b;
   --control: #23232c;
+  --control-hover: #2e2e3a;
+  --control-text: #d8dae4;
+  --input-bg: #16161d;
+  --scrollbar: #2a2a34;
+  --track: #202029;
+  --readout-bg: rgba(12, 12, 16, 0.93);
+  --backdrop: rgba(6, 6, 9, 0.6);
+  --row-selected: rgba(37, 99, 168, 0.28);
+  --table-rule: rgba(44, 44, 54, 0.5);
+  --marker: #ffffff;
+  --marker-shadow: #000000;
+  --check-text: #cfd2dc;
+  --warning-border: rgba(242, 176, 74, 0.55);
+  --warning-border-soft: rgba(242, 176, 74, 0.5);
+  --warning-bg: rgba(242, 176, 74, 0.1);
+  --error-border: rgba(255, 107, 107, 0.5);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #eef0f4;
+  --panel: rgba(252, 252, 254, 0.86);
+  --panel-solid: #f7f8fa;
+  --border: #c9ccd4;
+  --border-strong: #b0b4be;
+  --text: #16171c;
+  --text-strong: #000000;
+  --muted: #5c606c;
+  --dim: #82868f;
+  --accent: #2563a8;
+  --accent-edge: #1d5fb0;
+  --accent-text: #ffffff;
+  /* Not the dark amber: `#f2b04a` is tuned to glow on near-black and fails contrast
+     as text on a light panel. The warning *fill* below keeps the amber, because a
+     fill is read as a region rather than as glyphs. */
+  --warning: #9a6200;
+  --error: #c0362f;
+  --control: #e6e8ee;
+  --control-hover: #dadce4;
+  --control-text: #22242b;
+  --input-bg: #ffffff;
+  --scrollbar: #c2c6cf;
+  --track: #d8dbe2;
+  --readout-bg: rgba(252, 252, 254, 0.95);
+  --backdrop: rgba(40, 42, 50, 0.35);
+  --row-selected: rgba(37, 99, 168, 0.18);
+  --table-rule: rgba(160, 164, 174, 0.5);
+  --marker: #16171c;
+  --marker-shadow: #ffffff;
+  --check-text: #33363f;
+  --warning-border: rgba(154, 98, 0, 0.45);
+  --warning-border-soft: rgba(154, 98, 0, 0.4);
+  --warning-bg: rgba(242, 176, 74, 0.16);
+  --error-border: rgba(192, 54, 47, 0.45);
 }
 
 html,
@@ -124,7 +185,7 @@ body,
 }
 
 .column::-webkit-scrollbar-thumb {
-  background: #2a2a34;
+  background: var(--scrollbar);
   border-radius: 4px;
 }
 
@@ -137,7 +198,7 @@ body,
 }
 
 .panel-section.warning {
-  border-color: rgba(242, 176, 74, 0.55);
+  border-color: var(--warning-border);
 }
 
 .panel-section > header {
@@ -165,7 +226,7 @@ body,
 
 .panel-toggle:hover {
   background: none;
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .chevron {
@@ -206,7 +267,7 @@ body,
 
 button {
   background: var(--control);
-  color: #d8dae4;
+  color: var(--control-text);
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 4px 8px;
@@ -216,7 +277,7 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: #2e2e3a;
+  background: var(--control-hover);
 }
 
 button:disabled {
@@ -227,13 +288,13 @@ button:disabled {
 button.on {
   background: var(--accent);
   border-color: var(--accent-edge);
-  color: #fff;
+  color: var(--accent-text);
 }
 
 button.primary {
   background: var(--accent);
   border-color: var(--accent-edge);
-  color: #fff;
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -290,7 +351,7 @@ select {
   flex: 1;
   min-width: 0;
   width: 100%;
-  background: #16161d;
+  background: var(--input-bg);
   color: var(--text);
   border: 1px solid var(--border-strong);
   border-radius: 5px;
@@ -326,7 +387,7 @@ input[type='text']:disabled {
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: #cfd2dc;
+  color: var(--check-text);
   cursor: pointer;
 }
 
@@ -411,7 +472,7 @@ input[type='checkbox'] {
 }
 
 .part-row.selected {
-  background: rgba(37, 99, 168, 0.28);
+  background: var(--row-selected);
 }
 
 .part-name {
@@ -430,7 +491,7 @@ input[type='checkbox'] {
 
 .part-name:hover {
   background: none;
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .part-name .name {
@@ -451,7 +512,7 @@ input[type='checkbox'] {
 }
 
 .entity.broken {
-  border-color: rgba(255, 107, 107, 0.5);
+  border-color: var(--error-border);
 }
 
 .entity-head {
@@ -579,15 +640,15 @@ table.data td:first-child {
 table.data td {
   text-align: right;
   padding: 2px 3px;
-  border-bottom: 1px solid rgba(44, 44, 54, 0.5);
+  border-bottom: 1px solid var(--table-rule);
 }
 
 .warnings {
   list-style: none;
   margin: 0;
   padding: 6px 8px;
-  border: 1px solid rgba(242, 176, 74, 0.55);
-  background: rgba(242, 176, 74, 0.1);
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
   border-radius: 6px;
   color: var(--warning);
   font-size: 10.5px;
@@ -618,7 +679,7 @@ table.data td {
 .suggestion {
   text-align: left;
   color: var(--warning);
-  border-color: rgba(242, 176, 74, 0.5);
+  border-color: var(--warning-border-soft);
 }
 
 /* -- colour scale --------------------------------------------------------- */
@@ -668,8 +729,8 @@ table.data td {
   top: -2px;
   bottom: -2px;
   width: 2px;
-  background: #fff;
-  box-shadow: 0 0 2px #000;
+  background: var(--marker);
+  box-shadow: 0 0 2px var(--marker-shadow);
 }
 
 .legend-ticks {
@@ -691,7 +752,7 @@ table.data td {
 .readout {
   position: fixed;
   pointer-events: none;
-  background: rgba(12, 12, 16, 0.93);
+  background: var(--readout-bg);
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 5px 9px;
@@ -741,7 +802,7 @@ table.data td {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(6, 6, 9, 0.6);
+  background: var(--backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -766,7 +827,7 @@ table.data td {
 .bar-track {
   height: 5px;
   border-radius: 3px;
-  background: #202029;
+  background: var(--track);
   overflow: hidden;
 }
 
@@ -796,7 +857,7 @@ table.data td {
   max-height: 220px;
   overflow-y: auto;
   z-index: 20;
-  border-color: rgba(242, 176, 74, 0.5);
+  border-color: var(--warning-border-soft);
 }
 
 .issues header {
@@ -816,7 +877,7 @@ table.data td {
   gap: 5px;
   font-size: 10.5px;
   line-height: 1.45;
-  color: #d8dae4;
+  color: var(--control-text);
 }
 
 /* -- plots dock ----------------------------------------------------------- */

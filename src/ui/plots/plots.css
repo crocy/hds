@@ -1,15 +1,52 @@
 /*
- * Plot chrome. Scoped to `hds-plot*` so it cannot collide with the app shell's
- * panel styles; colours mirror `ui/styles.css` and the prototype.
+ * Plot chrome. Scoped to the module's own class names so it cannot collide with the
+ * app shell's panel styles; colours mirror `ui/styles.css` and the prototype, and
+ * are overridden per theme off `<html data-theme>`.
  */
 
-.hds-plot {
+/* Both roots carry the variables: the balance readout is a sibling of `.hds-plot`,
+   not a descendant, so it cannot inherit them. */
+.hds-plot,
+.hds-balance {
   --hds-plot-fg: #e8eaf0;
   --hds-plot-muted: #8f92a0;
   --hds-plot-label: #c9ccd8;
   --hds-plot-border: #2c2c36;
   --hds-plot-surface: rgba(255, 255, 255, 0.015);
+  --hds-plot-panel: rgba(20, 20, 26, 0.82);
+  /* Sits behind text drawn over the data area, so it tracks the app background. */
+  --hds-plot-halo: #0c0c10;
+  --hds-plot-track: rgba(255, 255, 255, 0.05);
+  --hds-plot-accent: #38bdf8;
+  --hds-plot-threshold: #f0554a;
+  --hds-plot-threshold-border: rgba(240, 85, 74, 0.7);
+  --hds-plot-threshold-bg: rgba(240, 85, 74, 0.12);
+  --hds-plot-warn: #facc15;
+  --hds-plot-warn-border: rgba(250, 204, 21, 0.45);
+  --hds-plot-warn-bg: rgba(250, 204, 21, 0.08);
+}
 
+[data-theme='light'] .hds-plot,
+[data-theme='light'] .hds-balance {
+  --hds-plot-fg: #16171c;
+  --hds-plot-muted: #5c606c;
+  --hds-plot-label: #33363f;
+  --hds-plot-border: #c9ccd4;
+  --hds-plot-surface: rgba(20, 21, 26, 0.025);
+  --hds-plot-panel: rgba(252, 252, 254, 0.86);
+  --hds-plot-halo: #eef0f4;
+  --hds-plot-track: rgba(20, 21, 26, 0.08);
+  --hds-plot-accent: #0369a1;
+  --hds-plot-threshold: #c2362b;
+  --hds-plot-threshold-border: rgba(194, 54, 43, 0.7);
+  --hds-plot-threshold-bg: rgba(194, 54, 43, 0.12);
+  /* Darkened for the same reason as the shell's `--warning`; the fill keeps the amber. */
+  --hds-plot-warn: #8f7200;
+  --hds-plot-warn-border: rgba(143, 114, 0, 0.45);
+  --hds-plot-warn-bg: rgba(250, 204, 21, 0.13);
+}
+
+.hds-plot {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -106,18 +143,18 @@
 
 .hds-plot__marker-label {
   font-size: 10px;
-  fill: #f0554a;
+  fill: var(--hds-plot-threshold);
 }
 
 .hds-plot__callout {
   font-size: 10.5px;
-  fill: #38bdf8;
+  fill: var(--hds-plot-accent);
 }
 
 /* Drawn under the callout text so it stays legible over the dense scatter. */
 .hds-plot__callout--halo {
   fill: none;
-  stroke: #0c0c10;
+  stroke: var(--hds-plot-halo);
   stroke-width: 3px;
   stroke-linejoin: round;
   opacity: 0.85;
@@ -125,7 +162,7 @@
 
 .hds-plot__span-label {
   font-size: 10.5px;
-  fill: #38bdf8;
+  fill: var(--hds-plot-accent);
 }
 
 /* Legend box, top-right inside the plot body — matches the reference figure. */
@@ -140,7 +177,7 @@
   padding: 6px 8px;
   font-size: 10.5px;
   line-height: 1.35;
-  background: rgba(20, 20, 26, 0.82);
+  background: var(--hds-plot-panel);
   border: 1px solid var(--hds-plot-border);
   border-radius: 3px;
   backdrop-filter: blur(6px);
@@ -202,7 +239,7 @@
   justify-content: space-between;
   font-size: 9.5px;
   color: var(--hds-plot-muted);
-  text-shadow: 0 0 4px #0c0c10;
+  text-shadow: 0 0 4px var(--hds-plot-halo);
 }
 
 /* --- Heat balance readout ------------------------------------------------- */
@@ -212,7 +249,7 @@
   flex-direction: column;
   gap: 10px;
   min-width: 0;
-  color: #e8eaf0;
+  color: var(--hds-plot-fg);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
@@ -222,8 +259,8 @@
   padding: 14px;
   text-align: center;
   font-size: 11.5px;
-  color: #8f92a0;
-  border: 1px dashed #2c2c36;
+  color: var(--hds-plot-muted);
+  border: 1px dashed var(--hds-plot-border);
   border-radius: 4px;
 }
 
@@ -242,7 +279,7 @@
 
 .hds-balance__caption {
   font-size: 11px;
-  color: #8f92a0;
+  color: var(--hds-plot-muted);
 }
 
 .hds-balance__section {
@@ -255,7 +292,7 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: #8f92a0;
+  color: var(--hds-plot-muted);
 }
 
 .hds-balance__bar {
@@ -263,7 +300,7 @@
   width: 100%;
   height: 10px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hds-plot-track);
   border-radius: 2px;
 }
 
@@ -280,7 +317,7 @@
   flex-wrap: wrap;
   gap: 4px 14px;
   font-size: 10.5px;
-  color: #c9ccd8;
+  color: var(--hds-plot-label);
 }
 
 .hds-balance__key {
@@ -314,7 +351,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #c9ccd8;
+  color: var(--hds-plot-label);
 }
 
 .hds-balance__value {
@@ -323,7 +360,7 @@
 }
 
 .hds-balance__value--muted {
-  color: #8f92a0;
+  color: var(--hds-plot-muted);
 }
 
 /* The residual is the trust signal: quiet when small, unmissable when not. */
@@ -338,20 +375,20 @@
 }
 
 .hds-balance__residual--ok {
-  color: #8f92a0;
-  border-color: #2c2c36;
+  color: var(--hds-plot-muted);
+  border-color: var(--hds-plot-border);
 }
 
 .hds-balance__residual--warn {
-  color: #facc15;
-  border-color: rgba(250, 204, 21, 0.45);
-  background: rgba(250, 204, 21, 0.08);
+  color: var(--hds-plot-warn);
+  border-color: var(--hds-plot-warn-border);
+  background: var(--hds-plot-warn-bg);
 }
 
 .hds-balance__residual--bad {
-  color: #f0554a;
-  border-color: rgba(240, 85, 74, 0.7);
-  background: rgba(240, 85, 74, 0.12);
+  color: var(--hds-plot-threshold);
+  border-color: var(--hds-plot-threshold-border);
+  background: var(--hds-plot-threshold-bg);
   font-weight: 600;
 }
 
@@ -369,5 +406,5 @@
 
 .hds-balance__more {
   font-size: 10.5px;
-  color: #8f92a0;
+  color: var(--hds-plot-muted);
 }

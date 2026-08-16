@@ -5,6 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>HDS — heat dissipation simulator</title>
+    <!--
+      `data-theme` is otherwise written by a React effect, so first paint would use
+      :root's dark values and a light-mode machine would flash black on every load.
+      Mirrors `parseThemeMode` and `resolveTheme` in src/ui/theme/theme.ts; the two
+      must not disagree, or the flash is replaced by a jump.
+    -->
+    <script>
+      (function () {
+        var stored = null;
+        try {
+          stored = localStorage.getItem('hds.theme');
+        } catch {
+          // Storage blocked (private mode): fall through to the system preference.
+        }
+        var mode = stored === 'dark' || stored === 'light' ? stored : 'system';
+        // Dark when the preference cannot be read: it is what the app looked like before themes.
+        var prefersDark = window.matchMedia
+          ? window.matchMedia('(prefers-color-scheme: dark)').matches
+          : true;
+        document.documentElement.dataset.theme =
+          mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
