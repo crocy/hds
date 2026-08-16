@@ -61,7 +61,7 @@ export interface StepImportOptions {
   linearDeflection?: number;
   linearDeflectionType?: OcctReadParams['linearDeflectionType'];
   angularDeflection?: number;
-  /** Defaults to `/occt-import-js.wasm`, i.e. the copy in `public/`. */
+  /** Defaults to `occt-import-js.wasm` under the app's base URL, i.e. the copy in `public/`. */
   locateFile?: (file: string) => string;
   /** Overrides how the wasm module is obtained. Node tests inject a resolved factory here. */
   loadOcct?: () => Promise<OcctFactory>;
@@ -78,7 +78,15 @@ const SOURCE_UNITS: LengthUnit = 'mm';
 
 export async function createOcctModule(options: StepImportOptions = {}): Promise<OcctModule> {
   const factory = await (options.loadOcct ?? loadOcctFromPackage)();
-  return factory({ locateFile: options.locateFile ?? ((file) => `/${file}`) });
+  return factory({ locateFile: options.locateFile ?? resolveFileFromBaseUrl });
+}
+
+/**
+ * `public/` is served under Vite's base, so under GitHub Pages the wasm is at
+ * `/hds/…`, not `/…`. Node has no `import.meta.env`; tests pass their own locateFile.
+ */
+function resolveFileFromBaseUrl(file: string): string {
+  return `${import.meta.env?.BASE_URL ?? '/'}${file}`;
 }
 
 export async function importStep(
