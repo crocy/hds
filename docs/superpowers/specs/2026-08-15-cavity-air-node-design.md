@@ -247,6 +247,14 @@ therefore no longer bounds the total from above, and the integration test says s
 of its old `< 72 W`. Losing that bound is a real cost of this change; the per-cavity
 conservation check is what replaces it as the thing holding the model honest.
 
+Because that cross-pocket path is mostly radiation, the whole result rests on the
+enclosure emissivity driving it. `CAVITY_DEFAULTS.insulated.emissivity = 0.2` was
+therefore checked against the hardware rather than assumed: the block is bare aluminium,
+and 0.2 is the oxidised-bare figure, consistent with the SS304 inner skin's 0.15. It
+stays. Anyone tempted to lower it to close the gap to 61 W should note that this is the
+wrong direction of reasoning — the gap is a consequence of the physics, not evidence
+against the coefficient.
+
 ### Unchanged
 
 All 10 tests in [cavity.test.ts](../../../src/geometry/cavity.test.ts) must keep passing

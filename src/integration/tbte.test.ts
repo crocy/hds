@@ -273,7 +273,12 @@ describe('TBTE housing', () => {
 
     // ...and the heat leaving that skin is the same order as the reference's 61 W.
     // Measured 82.5 W: higher because the sealed pocket carries the buried block's heat
-    // to the skin, and the reference mesh has no interior for it to cross.
+    // to the skin, and the reference mesh has no interior for it to cross. That path is
+    // mostly radiation, so this bound is only as trustworthy as the enclosure emissivity
+    // driving it — 0.2, confirmed against the hardware as a bare aluminium block, which
+    // is the oxidised-bare figure and sits consistently with the SS304 skin's 0.15.
+    // Lower it and this comes back down towards the reference; it should not be lowered
+    // to make that happen.
     expect(exposed.watts).toBeGreaterThan(70);
     expect(exposed.watts).toBeLessThan(95);
 
