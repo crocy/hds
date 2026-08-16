@@ -15,6 +15,21 @@ pnpm dev
 
 Other commands: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`.
 
+## Appearance
+
+The Display panel carries a system / dark / light choice, remembered per machine
+and never written into a project file — opening a colleague's `.hds.json` leaves your
+theme alone.
+
+Light theme's viewport is mid-grey rather than white, which is the one part of it worth
+knowing about. Every thermal colormap runs from near-black to near-white, so whichever
+pole the background sits at swallows the matching end of the ramp: on white the hot end
+disappears, and the hot end is what you opened the app to find. Mid-grey is where
+neither end is lost, and it leaves the colormap itself untouched so a screenshot from
+one theme still colour-matches the other. See
+[the theme spec](docs/superpowers/specs/2026-08-16-ui-theme-design.md) for the
+measurements.
+
 ## What it models
 
 Steady-state conduction across the tessellated surface — each triangle carries
@@ -44,7 +59,7 @@ radiative view factors between surfaces, no thermal mass.
 | `src/physics/` | Materials, convection, radiation, sparse assembly, solver |
 | `src/analysis/` | Path length, heat balance, 2D slice, thresholds |
 | `src/viewer/` | three.js scene, picking, colormaps, section gizmo |
-| `src/ui/` | React panels and state |
+| `src/ui/` | React panels, state, plots and the theme |
 
 `src/physics/` and `src/analysis/` import neither three.js nor React. They take typed
 arrays in and return typed arrays out, which is what keeps the solver testable in Node
