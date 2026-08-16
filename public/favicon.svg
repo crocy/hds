@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Inferno stops, the same table the viewer and plots colour by, so the tab icon
+       reads as the app's own field. The cool end of that map is near-black, which at
+       16 px swallows the tile, so the gradient stops at the magenta band instead. -->
+  <defs>
+    <radialGradient id="heat" cx="50%" cy="50%" r="72%">
+      <stop offset="0" stop-color="#fcffa4" />
+      <stop offset="0.3" stop-color="#fca50f" />
+      <stop offset="0.62" stop-color="#dd513a" />
+      <stop offset="1" stop-color="#8c2369" />
+    </radialGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="url(#heat)" />
+</svg>
