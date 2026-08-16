@@ -7,9 +7,10 @@
  * pieces — `Picker` (selection), `Overlays` (scenario markers) and `SectionGizmo`
  * (cut plane) — so the UI has one object to talk to.
  *
- * Visual reference is the `thermal_model_3d.html` prototype: dark background,
- * per-vertex inferno colours on a Phong mesh, Z-up orbit camera, ambient plus two
- * directional lights. Panning and the section clip are the additions.
+ * Visual reference is the `thermal_model_3d.html` prototype: per-vertex inferno
+ * colours on a Phong mesh, Z-up orbit camera, ambient plus two directional lights.
+ * Panning, the section clip and a background that follows the UI theme are the
+ * additions — the prototype's was fixed near-black.
  *
  * Rendering is on demand: every mutator marks the frame dirty, so a still view
  * costs nothing. Anything reaching past this API to mutate the scene must call
@@ -42,8 +43,19 @@ import {
   type SectionFieldStyle,
 } from './sectionGizmo';
 import type { PlaneBasis } from '@/geometry/section';
+// Type only: the viewer stays free of the theme's React binding at runtime.
+import type { ResolvedTheme } from '@/ui/theme';
 
-export const BACKGROUND_COLOR = 0x0c0c10;
+/**
+ * What sits behind the model. Every thermal colormap runs near-black to near-white,
+ * so a background at either pole swallows that end of the ramp; light theme is
+ * mid-grey rather than white to keep both ends readable.
+ */
+export const BACKGROUND_COLORS: Record<ResolvedTheme, number> = {
+  dark: 0x0c0c10,
+  light: 0x71747a,
+};
+
 export const DEFAULT_FOV = 38;
 
 /** Prototype view angles, which show the housing's top plate and two sides. */
@@ -58,8 +70,15 @@ export const ZOOM_STEP = 0.09;
 export const MIN_POLAR = 0.06;
 export const MAX_POLAR = 3.08;
 
-/** Nodes with no temperature — insulator parts, or before the first solve. */
-export const NO_DATA_COLOR = 0x5a6070;
+/**
+ * Nodes with no temperature — insulator parts, or before the first solve. What reads
+ * as "not solved" is the desaturation, which no colormap ever is, so the lightness is
+ * free to move with the theme and clear whichever background it has to be seen on.
+ */
+export const NO_DATA_COLORS: Record<ResolvedTheme, number> = {
+  dark: 0x5a6070,
+  light: 0xcdd0d6,
+};
 
 // ---------------------------------------------------------------------------
 // Camera maths
@@ -223,11 +242,15 @@ export interface ThermalSceneOptions {
 /** Pointer travel below this on press-and-release is a click, not a drag. */
 const CLICK_SLOP_PIXELS = 4;
 const CAMERA_SETTLE_MS = 180;
-const NO_DATA_LINEAR: readonly [number, number, number] = [
-  srgbToLinear(((NO_DATA_COLOR >> 16) & 0xff) / 255),
-  srgbToLinear(((NO_DATA_COLOR >> 8) & 0xff) / 255),
-  srgbToLinear((NO_DATA_COLOR & 0xff) / 255),
-];
+
+/** `0xRRGGBB` as the linear-space triple the colour attribute holds. */
+function linearTriple(color: number): [number, number, number] {
+  return [
+    srgbToLinear(((color >> 16) & 0xff) / 255),
+    srgbToLinear(((color >> 8) & 0xff) / 255),
+    srgbToLinear((color & 0xff) / 255),
+  ];
+}
 
 type PointerMode = 'none' | 'orbit' | 'pan' | 'section';
 
@@ -236,7 +259,7 @@ export class ThermalScene {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly raycaster = new THREE.Raycaster();
   private readonly lights: THREE.Light[] = [];
-  private readonly background: number;
+  private readonly background = new THREE.Color();
   private readonly maxPixelRatio: number;
 
   private readonly picker: Picker;
@@ -265,6 +288,7 @@ export class ThermalScene {
   private wireframe: THREE.LineSegments | null = null;
   private wireframeVisible = false;
   private partOverrides: Record<string, PartOverride> = {};
+  private noDataLinear = linearTriple(NO_DATA_COLORS.dark);
 
   private view: CameraView = {
     theta: DEFAULT_THETA,
@@ -283,11 +307,11 @@ export class ThermalScene {
   private hoverPointer: { x: number; y: number } | null = null;
 
   constructor(options: ThermalSceneOptions = {}) {
-    this.background = options.background ?? BACKGROUND_COLOR;
+    this.background.set(options.background ?? BACKGROUND_COLORS.dark);
     this.maxPixelRatio = options.maxPixelRatio ?? 2;
     this.handlers = options.handlers ?? {};
 
-    this.scene.background = new THREE.Color(this.background);
+    this.scene.background = this.background;
     this.camera = new THREE.PerspectiveCamera(options.fov ?? DEFAULT_FOV, 1, 0.001, 1000);
     this.camera.up.set(0, 0, 1);
 
@@ -392,6 +416,26 @@ export class ThermalScene {
   /** Marks the frame dirty. Rendering is on demand, so external mutations need this. */
   invalidate(): void {
     this.needsRender = true;
+  }
+
+  // -- theme ----------------------------------------------------------------
+
+  /** Both the scene background and the clear colour, which is what shows before the first draw. */
+  setBackground(color: number): void {
+    this.background.set(color);
+    this.renderer?.setClearColor(this.background, 1);
+    this.invalidate();
+  }
+
+  /**
+   * The grey is baked into the colour attribute, so the theme's is written in by
+   * repainting it — a re-render alone would leave unsolved nodes the old theme's grey
+   * until the next solve.
+   */
+  setNoDataColor(color: number): void {
+    this.noDataLinear = linearTriple(color);
+    this.writeColors();
+    this.invalidate();
   }
 
   // -- model and field ------------------------------------------------------
@@ -706,9 +750,9 @@ export class ThermalScene {
   }
 
   private writeNoData(node: number): void {
-    this.colors[node * 3] = NO_DATA_LINEAR[0];
-    this.colors[node * 3 + 1] = NO_DATA_LINEAR[1];
-    this.colors[node * 3 + 2] = NO_DATA_LINEAR[2];
+    this.colors[node * 3] = this.noDataLinear[0];
+    this.colors[node * 3 + 1] = this.noDataLinear[1];
+    this.colors[node * 3 + 2] = this.noDataLinear[2];
   }
 
   private applyClipping(): void {
