@@ -8,7 +8,7 @@ system / dark / light choice that reaches every surface, including the 3D viewpo
 **The theme reaches everything, viewport included.** The alternative — light chrome
 framing a permanently black viewport — was rejected as a visible seam.
 
-**The light viewport is mid-grey `#b9bdc6`, not white.** This is the decision the rest
+**The light viewport is mid-grey `#71747a`, not white.** This is the decision the rest
 of the spec hangs off, so the reasoning is worth stating in full.
 
 Every thermal colormap runs from near-black at the cold end to near-white at the hot
@@ -24,9 +24,29 @@ per-theme transform on the mesh would mean a screenshot from light theme no long
 colour-matches one from dark. The background is the free variable, so the background is
 what moves.
 
-`#b9bdc6` is a proposal, not a measured value. It is chosen so both ends of inferno
-clear it. Whether it is comfortable over a long session is a judgement to make against
-the running app.
+The value was picked by measurement, after a first guess of `#b9bdc6` was measured and
+failed. WCAG contrast of each candidate against inferno's two poles, worst end first:
+
+| Background | vs cold `#000004` | vs hot `#fcffa4` | Worst end |
+|---|---|---|---|
+| `#0c0c10` — dark theme, today | 1.07 | 18.57 | **1.07** |
+| `#ffffff` | 20.96 | 1.05 | **1.05** |
+| `#b9bdc6` — first guess | 11.14 | 1.79 | **1.79** |
+| `#8d9098` | 6.56 | 3.04 | **3.04** |
+| `#71747a` — chosen | 4.47 | 4.46 | **4.46** |
+
+`#b9bdc6` sits at luminance 0.508 and behaves almost exactly like white as far as the
+hot end is concerned. Clearing 3.0 at both ends requires luminance ≤ 0.283. `#71747a`
+is the point where the two ends are equal, so no end of the ramp is favoured and the
+choice does not have to be revisited if a colormap with different poles is added later.
+
+The cost is honest: light theme is light chrome over a graphite stage, not a white
+sheet. That was accepted deliberately, because the hot end is the end you open the app
+to find, and the alternative spends it on looking lighter.
+
+Note what the first row shows — dark theme has always scored 1.07 at its cold end. The
+app already ships with one end of the ramp lost; light theme is the first to lose
+neither.
 
 **The preference lives in `localStorage` only, never in a project file.** Theme is a
 property of the machine, not of the model under study. A `.hds.json` shared with a
@@ -139,9 +159,27 @@ through a `usePlotPalette()` hook. Six files import these constants today.
 it in light. Both give the data area its own stable ground so a plot is not read
 against whatever the 3D model happens to be showing through the translucent dock.
 
-`SERIES_COLORS` — the categorical ramp for per-part profile lines — is deliberately not
-re-toned per theme. Those eight hues are chosen to be distinguishable from *each other*,
-which is the only job they have, and they are mid-tone enough to hold on both panels.
+`SERIES_COLORS` — the categorical ramp for per-part profile lines — needs a per-theme
+variant. An earlier draft of this spec claimed the eight hues were "mid-tone enough to
+hold on both panels"; measured, they score 6.6–11.8 against the dark panel and
+1.25–2.22 against the light one. They are tuned to glow on near-black, like `--warning`.
+Being distinguishable from each other is not their only job — they also have to be
+visible.
+
+| Pairs with | Dark | Light | Light vs panel |
+|---|---|---|---|
+| orange | `#f59e42` | `#b45309` | 4.09 |
+| sky | `#38bdf8` | `#0369a1` | 4.84 |
+| violet | `#a78bfa` | `#6d28d9` | 5.79 |
+| green | `#4ade80` | `#15803d` | 4.09 |
+| pink | `#f472b6` | `#be185d` | 4.92 |
+| yellow | `#facc15` | `#a16207` | 4.01 |
+| blue | `#60a5fa` | `#1d4ed8` | 5.46 |
+| orange-2 | `#fb923c` | `#c2410c` | 4.22 |
+
+Hue and order are preserved so a part keeps its identity across a theme switch. Mutual
+separation does not suffer: the closest pair in the light ramp is ΔE 13.8 against the
+dark ramp's 8.7, so the light ramp is the more distinguishable of the two.
 
 ### The mark contrast rule, generalised
 
@@ -179,19 +217,41 @@ field covers the panel, has nothing to separate from, and is read against its ow
 ## 5. Viewer
 
 `ThermalScene` gains `setBackground(color: number)`; the background is fixed at
-construction today. `BACKGROUND_COLOR` becomes a per-theme record.
+construction today.
 
-| Constant | Dark | Light | Why it moves |
+**Only two viewer colours are per-theme.** The rule, which an earlier draft of this
+spec got wrong by hand-listing colours instead of deriving them:
+
+> A colour drawn *on the mesh* does not need a per-theme value, because the mesh's
+> colours do not change with the theme. Only what sits *behind* the model does.
+
+Overlays, the hover and selection highlights and the feature edges are all drawn onto
+mesh faces, so what they must clear is the colormap — and the colormap is theme-
+independent. Their contrast is therefore identical in both themes, and changing them
+per theme would only make them worse against the thing they actually have to clear.
+
+| Constant | Dark | Light | Why |
 |---|---|---|---|
-| `BACKGROUND_COLOR` | `0x0c0c10` | `0xb9bdc6` | Section 1. |
-| `HOVER_COLOR` | `0xffffff` | `0x101014` | A white highlight over a pale-yellow hot region on grey is invisible. |
-| `NO_DATA_COLOR` | `0x5a6070` | `0x4a5060` | Must stay clearly darker than the background to keep reading as "not solved". |
-| `featureEdges` | `0x9fb0d0` | `0x4a5a78` | Pale blue-grey washes out on mid-grey. |
+| `BACKGROUND_COLOR` | `0x0c0c10` | `0x71747a` | Section 1. |
+| `NO_DATA_COLOR` | `0x5a6070` | `0xcdd0d6` | It *is* mesh, so it must clear the background to be seen at all. 3.11 on dark; `0xcdd0d6` gives 3.03 on light. |
 
-The other four overlay colours were chosen to clear the inferno ramp, and the ramp has
-not changed, so they hold in both themes. `SELECTION_COLOR` (`0x22aaff`) reads on both.
-The wireframe is already black at 0.13 opacity and works better on light than it does
-now. Lighting and specular are unchanged.
+`NO_DATA_COLOR` goes *lighter* in light theme, not darker. Darkening it cannot reach
+3.0 against `#71747a` without approaching near-black, where it would collide with the
+cold end of the ramp — the one thing it must never be confused with. What makes it read
+as "not solved" is that it is *desaturated*, which no colormap ever is, so lightness is
+free to move.
+
+Everything else is unchanged in both themes: the four remaining overlay colours,
+`SELECTION_COLOR`, `featureEdges`, the black 0.13-opacity wireframe, lighting and
+specular.
+
+One pre-existing weakness, recorded because measuring for this change surfaced it and
+it would otherwise look like a regression: **`HOVER_COLOR` is white, which scores 1.05
+against the ramp's hot end — in the theme that ships today.** Hovering a hot surface
+already shows almost nothing. No flat colour can clear a full-range colormap; the fix
+is a different highlight technique, not a different colour, and it is out of scope
+here. White is kept in both themes. It is also the better of the two against the new
+light background (4.69, against 4.05 for the near-black an earlier draft proposed).
 
 ## 6. Tests
 
@@ -199,17 +259,35 @@ now. Lighting and specular are unchanged.
 - `localStorage` round-trip, and an invalid stored value falling back to `system`.
 - **Palette completeness** — every key present in both themes, so a half-converted
   palette cannot ship.
-- **Contrast floor** — every palette colour clears its own theme's background by a
-  minimum ratio. This is the test that catches a background choice swallowing an end of
-  the ramp, rather than leaving it to be noticed by eye.
+- **Contrast floor** — every colour that *encodes something* clears its own theme's
+  panel or background by 3.0, WCAG's threshold for graphical objects. This is the test
+  that catches a background choice swallowing an end of the ramp, rather than leaving it
+  to be noticed by eye; it is what caught `#b9bdc6`.
+
+  The floor applies to colours a reader has to *resolve*: the plot palette's `accent`,
+  `threshold`, `reference`, `convection`, `radiation`, all eight `SERIES_COLORS`, and
+  `NO_DATA_COLOR` against the viewport background.
+
+  It deliberately does not apply to structural chrome — `axis`, `grid`, `barEdge`, and
+  the panel borders. An axis rule measures 1.61 on dark and 1.85 on light, and that is
+  correct: a hairline that competes with the data for attention is a worse plot. These
+  are excluded by name in the test with this reason stated, never by lowering the floor
+  until everything passes. If a colour fails, the colour moves or the exclusion is
+  argued explicitly — the threshold does not.
 - `markColor` under the dark palette reproduces the pre-change values, pinning the
   claim that dark theme is untouched.
 
 ## 7. Known limitations
 
-- `#b9bdc6` is unvalidated against long use, as stated in section 1.
-- The overlay colours are carried into light theme on the argument that they were
-  chosen against the ramp rather than against the background. `featureEdges` already
-  turned out to be an exception, so the other four are worth a look on the running app.
+- `#71747a` clears the measured floor but is unvalidated against long use. Light theme
+  is a graphite stage under light chrome, which is a deliberate trade (section 1) but
+  still a look worth living with before calling it settled.
 - Nothing here re-tones the colormaps themselves, so the cold end of a light-theme model
   is still near-black — correct, but it means a cold model reads as a dark silhouette.
+- The hover highlight is weak on hot surfaces in **both** themes (section 5). Untouched
+  here, and worth its own change.
+- Overlay colours are carried into light theme unchanged on the argument in section 5.
+  That argument is sound for faces drawn on the mesh, but an overlay silhouetted against
+  the background is a different case: `contacts` (1.50), `cavities` (1.37) and
+  `SELECTION_COLOR` (1.84) are all weak against `#71747a`. Worth a look on the running
+  app before deciding whether the rule needs an exception.
