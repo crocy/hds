@@ -54,7 +54,7 @@ radiative view factors between surfaces, no thermal mass.
 
 | Path | Contents |
 |---|---|
-| `src/core/` | Shared type contract, units, defaults, test fixtures |
+| `src/core/` | Shared type contract, units, defaults, target helpers, test fixtures |
 | `src/geometry/` | Importers, mesh build and welding, topology, cavities, contacts, sectioning |
 | `src/physics/` | Materials, convection, radiation, sparse assembly, solver |
 | `src/analysis/` | Path length, heat balance, 2D slice, thresholds |

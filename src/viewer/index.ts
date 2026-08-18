@@ -44,11 +44,8 @@ export {
   SELECTION_COLOR,
   SELECTION_MODES,
   SELECTION_MODE_HOTKEYS,
-  applySelection,
   describeTarget,
   resolveTarget,
-  targetKey,
-  targetsEqual,
   worldPerPixel,
 } from './picking';
 export type { PickHit, SelectionMode } from './picking';

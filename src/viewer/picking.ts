@@ -13,6 +13,7 @@
 
 import * as THREE from 'three';
 import type { Target, ThermalModel, Vec3 } from '@/core/types';
+import { applySelection } from '@/core/targets';
 
 export type SelectionMode = 'part' | 'face' | 'edge' | 'point';
 
@@ -417,26 +418,6 @@ export function resolveTarget(model: ThermalModel, target: Target): ResolvedTarg
   }
 }
 
-/** Stable identity for a target, for set membership and React keys. */
-export function targetKey(target: Target): string {
-  switch (target.type) {
-    case 'part':
-      return `part:${target.partId}`;
-    case 'face':
-      return `face:${target.partId}:${target.faceId}`;
-    case 'edge':
-      return `edge:${target.partId}:${target.edgeId}`;
-    case 'node':
-      return `node:${target.partId}:${target.nodeId}`;
-    default:
-      return 'unknown';
-  }
-}
-
-export function targetsEqual(a: Target, b: Target): boolean {
-  return targetKey(a) === targetKey(b);
-}
-
 /** Human-readable label for the selection panel and the readout. */
 export function describeTarget(model: ThermalModel, target: Target): string {
   const part = model.parts.find((candidate) => candidate.id === target.partId);
@@ -453,23 +434,6 @@ export function describeTarget(model: ThermalModel, target: Target): string {
     default:
       return partName;
   }
-}
-
-/**
- * Click semantics: plain click replaces the selection, shift-click toggles the
- * target in and out of it.
- */
-export function applySelection(
-  selection: readonly Target[],
-  target: Target | null,
-  additive: boolean,
-): Target[] {
-  if (!target) return additive ? [...selection] : [];
-  if (!additive) return [target];
-  const key = targetKey(target);
-  const existing = selection.findIndex((candidate) => targetKey(candidate) === key);
-  if (existing >= 0) return selection.filter((_, index) => index !== existing);
-  return [...selection, target];
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@
 
 import { createDefaultScenario, DEFAULT_AMBIENT_C } from '@/core/defaults';
 import type { Cavity, Contact, Scenario, SolveResult, Target, ThermalModel } from '@/core/types';
+import { sameTargets } from '@/core/targets';
 import type { ImportSettings, ImportStage } from '@/io/importPipeline';
 import type { OpenedProject, ProjectIssue, ProjectSource } from '@/io/project';
 import { DEFAULT_IMPORT_SETTINGS } from '@/io/importPipeline';
@@ -248,7 +249,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         : { ...state, viewer: { ...state.viewer, selectionMode: action.mode } };
 
     case 'view/setSelection':
-      return sameSelection(state.viewer.selection, action.selection)
+      return sameTargets(state.viewer.selection, action.selection)
         ? state
         : { ...state, viewer: { ...state.viewer, selection: action.selection } };
 
@@ -293,26 +294,4 @@ function shallowEqual(a: object, b: object): boolean {
 function staleSolve(solve: SolveState): SolveState {
   if (!solve.result || solve.stale) return solve;
   return { ...solve, stale: true };
-}
-
-function sameSelection(a: readonly Target[], b: readonly Target[]): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  return a.every((target, index) => selectionKey(target) === selectionKey(b[index]));
-}
-
-/** Local copy of the viewer's `targetKey`, so this module stays free of three.js. */
-function selectionKey(target: Target): string {
-  switch (target.type) {
-    case 'part':
-      return `part:${target.partId}`;
-    case 'face':
-      return `face:${target.partId}:${target.faceId}`;
-    case 'edge':
-      return `edge:${target.partId}:${target.edgeId}`;
-    case 'node':
-      return `node:${target.partId}:${target.nodeId}`;
-    default:
-      return 'unknown';
-  }
 }

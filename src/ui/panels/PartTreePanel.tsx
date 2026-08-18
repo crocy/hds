@@ -7,7 +7,7 @@
  */
 
 import type { BodyType, PartOverride, Target } from '@/core/types';
-import { applySelection } from '@/viewer';
+import { applySelection } from '@/core/targets';
 import { Panel } from '../components/Panel';
 import { ButtonGroup, EmptyState, Hint, NumberField, SliderField } from '../components/fields';
 import { formatMillimetres } from '../state/format';

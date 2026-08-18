@@ -10,7 +10,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Target, ThermalModel, Vec3 } from '@/core/types';
+import type { ThermalModel, Vec3 } from '@/core/types';
+import { sameTargets } from '@/core/targets';
 import { CAVITY_DEFAULTS } from '@/geometry/cavity';
 import { planeBasis, sectionModel, type SectionPolylineDetail } from '@/geometry/section';
 import { solveSliceField } from '@/analysis/slice2d';
@@ -40,7 +41,6 @@ import {
   planeOffset,
   resolveScaleRange,
   sectionExtent,
-  targetKey,
   BACKGROUND_COLORS,
   NO_DATA_COLORS,
   OVERLAY_KINDS,
@@ -623,11 +623,6 @@ function axisLabel(axis: Vec3): string {
 
 function sameVector(a: Vec3, b: Vec3): boolean {
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
-}
-
-function sameTargets(a: readonly Target[], b: readonly Target[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((target, index) => targetKey(target) === targetKey(b[index]));
 }
 
 function isTypingTarget(target: EventTarget | null): boolean {
