@@ -63,6 +63,16 @@ export interface HeatBalanceInput {
   /** Watts injected at each node by heatLoad boundary conditions. length = nodeCount */
   nodeLoad: ArrayLike<number>;
   cavity?: CavityExchange;
+  /**
+   * `DofMap.nodeDof` — negative for a node the assembly left out of the system.
+   *
+   * `conduction` arrives already mirroring the assembly's skips, but contacts are read
+   * straight off the scenario, so this is what keeps the two agreeing about a joint onto
+   * an insulator part. The solver never assembled that link; billing it here for the
+   * drop onto a part merely *reported* at ambient invents watts no equation carried.
+   * Absent means every node was solved.
+   */
+  nodeDof?: ArrayLike<number>;
 }
 
 function convectiveLoss(input: HeatBalanceInput, node: number): number {
@@ -143,12 +153,14 @@ function contactConductance(contact: Contact, pair: number): number {
 function contactWatts(
   contact: Contact,
   temperature: ArrayLike<number>,
+  nodeDof: ArrayLike<number> | undefined,
   outflow?: Float64Array,
 ): number {
   let watts = 0;
   for (let pair = 0; pair * 2 + 1 < contact.nodePairs.length; pair++) {
     const a = contact.nodePairs[pair * 2];
     const b = contact.nodePairs[pair * 2 + 1];
+    if (nodeDof && (nodeDof[a] < 0 || nodeDof[b] < 0)) continue;
     const flux = contactConductance(contact, pair) * (temperature[a] - temperature[b]);
     watts += flux;
     if (outflow) {
@@ -187,7 +199,7 @@ export function computeHeatBalance(input: HeatBalanceInput): HeatBalance {
     .filter((contact) => contact.enabled)
     .map((contact) => ({
       contactId: contact.id,
-      watts: contactWatts(contact, temperature, outflow),
+      watts: contactWatts(contact, temperature, input.nodeDof, outflow),
     }));
 
   const edgeCount = conduction.conductance.length;

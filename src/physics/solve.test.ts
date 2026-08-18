@@ -608,6 +608,38 @@ describe('body types', () => {
     expectEnergyConserved(result);
   });
 
+  it('carries nothing across a contact onto an insulator part', () => {
+    // The assembly already skips a link whose far node has no DOF. The balance read
+    // its contacts off the scenario instead, so it billed the joint for the full drop
+    // onto a part reported at ambient — 2.3e7 W on a real assembly, and a residual
+    // that condemned an otherwise sound field.
+    const model = twoStripModel(0.1, 0.02, 20);
+    const [jointA, jointB] = rightEdgeNodes(20, 0);
+    const [jointC, jointD] = leftEdgeNodes(20, 21 * 2);
+    const scenario = scenarioWith({
+      partOverrides: { 'part-1': { bodyType: 'insulator' } },
+      contacts: [
+        {
+          id: 'joint',
+          partA: 'part-0',
+          partB: 'part-1',
+          nodePairs: Uint32Array.of(jointA, jointC, jointB, jointD),
+          pairArea: Float32Array.of(1e-5, 1e-5),
+          conductance: 1e6,
+          autoDetected: false,
+          enabled: true,
+        },
+      ],
+      boundaryConditions: [fixedFilm('film', 'part-0', 10), fixedPartTemp('hot', 'part-0', 400)],
+    });
+    const result = solveShell(model, scenario);
+
+    expect(result.balance.perContact[0].watts).toBe(0);
+    expectNoNaN(result.temperature);
+    expectEnergyConserved(result);
+    expect(result.warnings.join('\n')).toContain('joint');
+  });
+
   it('still says nothing was solved when a live cavity is the only DOF left', () => {
     // A cavity owns a DOF of its own, so the system is not empty even when every part
     // is an insulator. The warning is about nodes, and it has to go on saying so.

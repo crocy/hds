@@ -768,16 +768,31 @@ export function assembleSystem(
   for (const contact of scenario.contacts) {
     if (!contact.enabled) continue;
     const pairCount = contact.nodePairs.length >> 1;
+    let linked = 0;
+    let unsolvedEnd = false;
     for (let pair = 0; pair < pairCount; pair++) {
       const g = contact.conductance * contact.pairArea[pair];
       if (!(g > 0)) continue;
       const i = nodeDof[contact.nodePairs[pair * 2]];
       const j = nodeDof[contact.nodePairs[pair * 2 + 1]];
-      if (i < 0 || j < 0 || i === j) continue;
+      if (i < 0 || j < 0) {
+        unsolvedEnd = true;
+        continue;
+      }
+      if (i === j) continue;
+      linked++;
       builder.add(i, i, g);
       builder.add(j, j, g);
       builder.add(i, j, -g);
       builder.add(j, i, -g);
+    }
+    // A joint onto an insulator part is not an error — the user asked for that part to
+    // be left out — but it silently deletes a heat path, which is worth saying out loud.
+    if (unsolvedEnd && linked === 0) {
+      warnings.push(
+        `Contact '${contact.id}' (${contact.partA} ↔ ${contact.partB}) links a part that is ` +
+          `outside the system, so it carries no heat; make that part a sheet or a lump to use it`,
+      );
     }
   }
 

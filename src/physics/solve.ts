@@ -183,6 +183,7 @@ export function solveShell(
     conduction: conductionEdges(model, scenario, dofs),
     fixedNodes: fixedNodeList(model, dofs, fixedDof),
     nodeLoad: nodeLoads(model, dofs, loadPerDof),
+    nodeDof: dofs.nodeDof,
     cavity: {
       nodeCavity: coefficients.nodeCavity,
       hConvection: convection.toCavity,
