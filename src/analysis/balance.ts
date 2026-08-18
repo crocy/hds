@@ -28,6 +28,23 @@ export interface ConductionEdges {
 }
 
 /**
+ * Links from a surface node into the interior of the part it belongs to.
+ *
+ * The far end is a cell, which has no node index, so its temperature travels with the
+ * edge. Cell-to-cell links are deliberately absent: both of their ends are interior and
+ * cancel in the sum a fixed node's injected power is taken from. What is left is the
+ * only way heat enters or leaves a filled part, and so the only term the balance needs.
+ */
+export interface InteriorEdges {
+  /** Node end of each link. */
+  node: Uint32Array;
+  /** W/K */
+  conductance: Float64Array;
+  /** Cell end's temperature, kelvin. */
+  cellTemperature: Float64Array;
+}
+
+/**
  * What each node exchanges with the air sealed against it, rather than with the room.
  *
  * The `toCavity` half of the same split whose `toAmbient` half arrives as `hConvection`
@@ -63,6 +80,8 @@ export interface HeatBalanceInput {
   /** Watts injected at each node by heatLoad boundary conditions. length = nodeCount */
   nodeLoad: ArrayLike<number>;
   cavity?: CavityExchange;
+  /** Conduction into the interior of the parts solved volumetrically. */
+  interior?: InteriorEdges;
   /**
    * `DofMap.nodeDof` — negative for a node the assembly left out of the system.
    *
@@ -209,6 +228,15 @@ export function computeHeatBalance(input: HeatBalanceInput): HeatBalance {
     const flux = conduction.conductance[edge] * (temperature[a] - temperature[b]);
     outflow[a] += flux;
     outflow[b] -= flux;
+  }
+
+  const interior = input.interior;
+  if (interior) {
+    for (let edge = 0; edge < interior.conductance.length; edge++) {
+      const node = interior.node[edge];
+      outflow[node] +=
+        interior.conductance[edge] * (temperature[node] - interior.cellTemperature[edge]);
+    }
   }
 
   // At a pinned node the BC supplies whatever the node sheds by conduction and

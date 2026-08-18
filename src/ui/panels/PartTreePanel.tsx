@@ -21,6 +21,15 @@ const BODY_TYPES: ReadonlyArray<{ value: BodyType; label: string; title: string 
     title: 'Conducts through a thickness; convects from both faces',
   },
   { value: 'lump', label: 'lump', title: 'Chunky solid; the shell mesh carries its surface' },
+  {
+    value: 'solid',
+    label: 'solid',
+    title:
+      'Filled with cells and conducted in 3D, so the part drops a real gradient through' +
+      ' its thickness. What a thick low-k body — insulation above all — needs, since a' +
+      ' sheet would let its heat run along the skin instead. Its thickness sets the cell' +
+      ' size (four across it), not its conduction.',
+  },
   { value: 'insulator', label: 'insulator', title: 'Left out of the solve entirely' },
 ];
 

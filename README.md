@@ -44,6 +44,12 @@ thermal path between the walls that bound it rather than somewhere heat can vani
 what flows in flows back out, and the cavities panel reports each pocket's air
 temperature and shows that its books balanced.
 
+A part can also be marked `solid`, which fills it with cells and conducts it in three
+dimensions. That is what a thick low-conductivity body needs: as a sheet it conducts
+along its own skin, so 40 mm of glass wool short-circuits the very thickness it exists
+to resist with. The part's thickness sets the cell size rather than its conduction, and
+the through-thickness resistance is `t/(k·A)` exactly, at any cell count.
+
 Sub-ambient simulation works without a separate mode: the convection correlations branch
 on the *sign* of ΔT, so a cold plate facing up takes the same branch as a hot plate
 facing down.

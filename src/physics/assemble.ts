@@ -9,12 +9,27 @@
 
 import type { Cavity, Part, Scenario, Target, ThermalModel } from '../core/types';
 import { buildBvh, createHitBuffer, raycastInto, type Bvh, type HitBuffer } from '../geometry/bvh';
+import { buildVolumeMesh, type VolumeMesh } from '../geometry/volume';
 import { computeConvectionCoefficients } from './convection';
 import { resolvePart } from './materials';
 import { computeTriangleEmissivity, radiationCoefficient } from './radiation';
 import { CsrMatrix, SparseBuilder } from './sparse';
 
 const NO_NODES = new Uint32Array(0);
+
+/**
+ * Cells across a solid part's thickness. The resistance through a wall is exact at any
+ * count — a series of cells sums to the same `t/(k·A)` — so this buys resolution of the
+ * field and of the half-cell offset at the boundary, not the total.
+ */
+const CELLS_ACROSS_THICKNESS = 4;
+
+/** A `solid` part's interior cells, and where their DOFs start. */
+export interface VolumeDofs {
+  mesh: VolumeMesh;
+  /** DOF of cell c is `dofBase + c`. */
+  dofBase: number;
+}
 
 export interface DofMap {
   /** node → degree of freedom, −1 for nodes excluded from the system. */
@@ -23,9 +38,22 @@ export interface DofMap {
   dofPart: Int32Array;
   /** DOF of each cavity's trapped air, indexed by cavity id. −1 for adiabatic or absent. */
   cavityDof: Int32Array;
-  /** Node DOFs occupy 0..nodeDofCount; the cavity DOFs follow. */
+  /** One entry per part actually solved volumetrically; empty when none is. */
+  volumes: VolumeDofs[];
+  /**
+   * Everything a node temperature may refer to occupies 0..nodeDofCount — the volume
+   * cells first, then the node DOFs proper. Cavity air follows, and nothing reads it
+   * as a node.
+   */
   nodeDofCount: number;
   dofCount: number;
+  /** Complaints raised while building the map, for the solver to surface. */
+  warnings: string[];
+}
+
+/** Parts whose in-plane shell conduction is replaced by their interior. */
+export function volumetricParts(dofs: DofMap): Set<number> {
+  return new Set(dofs.volumes.map((volume) => volume.mesh.partIndex));
 }
 
 /**
@@ -34,6 +62,10 @@ export interface DofMap {
  * `lump` shares one, which makes the part internally isothermal while it still
  * exchanges heat over its full area; an `insulator` gets −1 and drops out of the system
  * entirely.
+ *
+ * A `solid` node gets its own DOF too, but its part conducts through the cells filling
+ * it rather than along its skin, so the surface is a boundary the interior reaches
+ * rather than a path in its own right.
  */
 export function buildDofMap(model: ThermalModel, scenario: Scenario): DofMap {
   const nodeDof = new Int32Array(model.nodeCount).fill(-1);
@@ -43,12 +75,37 @@ export function buildDofMap(model: ThermalModel, scenario: Scenario): DofMap {
   const lumpDof = new Int32Array(model.parts.length).fill(-1);
   const opposite = pairThroughThickness(model, scenario);
   const dofPart: number[] = [];
-  let dofCount = 0;
+  const warnings: string[] = [];
 
+  // Cells are numbered first, because a filled part's surface nodes take their DOFs
+  // from them rather than owning any of their own.
+  const volumes = buildVolumeDofs(model, scenario, bodyTypes, 0, warnings);
+  const volumeOf = new Map(volumes.volumes.map((volume) => [volume.mesh.partIndex, volume]));
+  let dofCount = volumes.dofCount;
+  for (let dof = 0; dof < dofCount; dof++) dofPart.push(-1);
+  for (const volume of volumes.volumes) {
+    for (let cell = 0; cell < volume.mesh.cellCount; cell++) {
+      dofPart[volume.dofBase + cell] = volume.mesh.partIndex;
+    }
+  }
+
+  let strandedNodes = 0;
   for (let node = 0; node < model.nodeCount; node++) {
     const part = model.nodePart[node];
     const bodyType = bodyTypes[part] ?? 'sheet';
     if (bodyType === 'insulator') continue;
+    if (volumeOf.has(part)) {
+      // A filled part's node keeps a DOF of its own — it is the temperature *at the
+      // surface*, where the film, the radiation and any contact act — and reaches the
+      // interior through the single cell behind it. One link per node, never one cell
+      // to many nodes: a cell tied to the corners of a coarse facet would put every
+      // cell under that facet on a common temperature, which is the short along the
+      // skin that filling the part exists to remove.
+      if (volumeOf.get(part)!.mesh.nodeCell[node] < 0) strandedNodes++;
+      nodeDof[node] = dofCount++;
+      dofPart.push(part);
+      continue;
+    }
     if (bodyType === 'lump') {
       if (lumpDof[part] < 0) {
         lumpDof[part] = dofCount++;
@@ -72,14 +129,69 @@ export function buildDofMap(model: ThermalModel, scenario: Scenario): DofMap {
     dofPart.push(part);
   }
 
+  if (strandedNodes > 0) {
+    warnings.push(
+      `${strandedNodes} node(s) of a solid part found no cell behind them — the wall there is ` +
+        `thinner than the grid — so that much of its surface reaches the interior through its ` +
+        `neighbours only`,
+    );
+  }
+
   const cavities = assignCavityDofs(scenario.cavities, dofCount);
   return {
     nodeDof,
     dofPart: Int32Array.from(dofPart),
     cavityDof: cavities.cavityDof,
+    volumes: volumes.volumes,
+    warnings,
     nodeDofCount: dofCount,
     dofCount: cavities.dofCount,
   };
+}
+
+/**
+ * Cells for every `solid` part, numbered after the cavity air.
+ *
+ * A part that yields none — an open shell, or a wall the grid could not resolve — is
+ * reported and left to conduct in plane as a sheet would. Zeroing its shell conduction
+ * on the strength of an interior that is not there would disconnect it entirely, and
+ * an isolated part pinned to ambient is a far worse answer than a coarse one.
+ */
+function buildVolumeDofs(
+  model: ThermalModel,
+  scenario: Scenario,
+  bodyTypes: readonly string[],
+  firstDof: number,
+  warnings: string[],
+): { volumes: VolumeDofs[]; dofCount: number } {
+  const volumes: VolumeDofs[] = [];
+  let dofCount = firstDof;
+  if (!bodyTypes.includes('solid')) return { volumes, dofCount };
+
+  const bvh = buildBvh(model);
+  model.parts.forEach((part, index) => {
+    if (bodyTypes[index] !== 'solid') return;
+    // The resolved thickness, so the grid follows the figure the user can actually
+    // edit rather than whatever import derived from volume over surface area.
+    const { thickness } = resolvePart(part, scenario.partOverrides[part.id]);
+    const mesh = buildVolumeMesh(model, index, { bvh, cellSize: thickness / CELLS_ACROSS_THICKNESS });
+    if (mesh.cellCount === 0) {
+      warnings.push(
+        `'${part.name}' is set to solid but no interior could be filled — its shell is not ` +
+          `closed, or its wall is thinner than one cell. It was conducted as a sheet instead`,
+      );
+      return;
+    }
+    if (mesh.coarsened) {
+      warnings.push(
+        `'${part.name}' needed a coarser grid than its thickness asked for ` +
+          `(${(mesh.cellSize * 1000).toFixed(1)} mm cells); its gradient is under-resolved`,
+      );
+    }
+    volumes.push({ mesh, dofBase: dofCount });
+    dofCount += mesh.cellCount;
+  });
+  return { volumes, dofCount };
 }
 
 /**
@@ -502,6 +614,12 @@ export function splitNodeCoefficient(
   return { toAmbient, toCavity, nodeCavity };
 }
 
+/** The nodes belonging to a filled part, in index order. */
+function* volumeNodes(model: ThermalModel, volume: VolumeDofs): Generator<number> {
+  const part = model.parts[volume.mesh.partIndex];
+  for (let node = part.nodeRange[0]; node < part.nodeRange[1]; node++) yield node;
+}
+
 /**
  * The DOF of the cavity a triangle exchanges with, or −1 when that is ambient: open
  * air, and a cavity with no DOF, are the same thing to everything downstream.
@@ -675,13 +793,19 @@ export function assembleSystem(
   // Reserve every diagonal slot so elimination always has one to write into.
   for (let dof = 0; dof < dofCount; dof++) builder.add(dof, dof, 0);
 
+  // A part solved through its interior conducts nothing in plane: leaving the shell
+  // term as well would put a second path along the skin, in parallel with the bulk and
+  // far shorter — exactly the short circuit the volumetric mode exists to remove.
+  const volumetric = volumetricParts(dofs);
   const conductance: number[] = [];
   const insulator: boolean[] = [];
-  for (const part of model.parts) {
+  model.parts.forEach((part, index) => {
     const resolved = resolvePart(part, scenario.partOverrides[part.id]);
-    conductance.push(resolved.material.k * conductionThickness(part, resolved.thickness));
+    conductance.push(
+      volumetric.has(index) ? 0 : resolved.material.k * conductionThickness(part, resolved.thickness),
+    );
     insulator.push(resolved.bodyType === 'insulator');
-  }
+  });
 
   const weights = new Float64Array(3);
   const corner = new Int32Array(3);
@@ -763,6 +887,34 @@ export function assembleSystem(
     builder.add(cav, cav, toCavity);
     builder.add(dof, cav, -toCavity);
     builder.add(cav, dof, -toCavity);
+  }
+
+  for (const volume of dofs.volumes) {
+    const part = model.parts[volume.mesh.partIndex];
+    const k = resolvePart(part, scenario.partOverrides[part.id]).material.k;
+    if (!(k > 0)) continue;
+    const link = (a: number, b: number, g: number) => {
+      builder.add(a, a, g);
+      builder.add(b, b, g);
+      builder.add(a, b, -g);
+      builder.add(b, a, -g);
+    };
+    // Neighbours share a face of d² across a centre spacing of d, so k·d.
+    const cellToCell = k * volume.mesh.cellSize;
+    const { links } = volume.mesh;
+    for (let i = 0; i < links.length; i += 2) {
+      link(volume.dofBase + links[i], volume.dofBase + links[i + 1], cellToCell);
+    }
+    // ...and the surface reaches the first cell centre over half a cell, across the
+    // node's own tributary area. In series that is d/2 + (n−1)·d + d/2 over k·A, which
+    // is t/(k·A) exactly, at any cell count.
+    for (const node of volumeNodes(model, volume)) {
+      const cell = volume.mesh.nodeCell[node];
+      if (cell < 0 || nodeDof[node] < 0) continue;
+      const g = (2 * k * model.nodeArea[node]) / volume.mesh.cellSize;
+      if (!(g > 0)) continue;
+      link(nodeDof[node], volume.dofBase + cell, g);
+    }
   }
 
   for (const contact of scenario.contacts) {

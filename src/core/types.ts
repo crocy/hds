@@ -21,7 +21,14 @@ export interface Bounds {
 // Geometry
 // ---------------------------------------------------------------------------
 
-export type BodyType = 'sheet' | 'lump' | 'insulator';
+/**
+ * How a part conducts. `sheet` spreads heat in plane through `k × thickness` and is
+ * isothermal across its thickness; `lump` is one temperature throughout; `solid` fills
+ * the part with cells and conducts in three dimensions, which is what a thick low-k
+ * body — insulation above all — needs to drop its gradient across itself instead of
+ * short-circuiting along its own skin; `insulator` leaves the system entirely.
+ */
+export type BodyType = 'sheet' | 'lump' | 'solid' | 'insulator';
 
 export interface Part {
   id: string;

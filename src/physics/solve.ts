@@ -9,7 +9,7 @@
  * runs in Node under vitest; `worker.ts` is the only browser-specific wrapper.
  */
 
-import { computeHeatBalance, type ConductionEdges } from '../analysis/balance';
+import { computeHeatBalance, type ConductionEdges, type InteriorEdges } from '../analysis/balance';
 import type {
   HeatBalance,
   Scenario,
@@ -25,6 +25,7 @@ import {
   cotangentWeights,
   splitNodeCoefficient,
   surfaceCoefficients,
+  volumetricParts,
   type DofMap,
   type SurfaceCoefficients,
 } from './assemble';
@@ -90,6 +91,7 @@ export function solveShell(
   };
 
   const dofs = buildDofMap(model, scenario);
+  for (const message of dofs.warnings) warn(message);
   if (dofs.nodeDofCount === 0) {
     warn('No solvable nodes: every part is an insulator, so nothing was solved');
   }
@@ -116,6 +118,11 @@ export function solveShell(
   for (let node = 0; node < model.nodeCount; node++) {
     const dof = dofs.nodeDof[node];
     if (dof >= 0) dofSolution[dof] = temperature[node];
+  }
+  // Interior cells start at ambient rather than at 0 K, which is only a starting guess
+  // for CG but a wildly bad one to hand a stiff conduction network.
+  for (let dof = dofs.nodeDofCount; dof < dofs.dofCount; dof++) {
+    dofSolution[dof] = scenario.ambient;
   }
 
   let outerIterations = 0;
@@ -181,6 +188,7 @@ export function solveShell(
     hConvection: convection.toAmbient,
     emissivity: coefficients.emissivityToAmbient,
     conduction: conductionEdges(model, scenario, dofs),
+    interior: interiorEdges(model, scenario, dofs, dofSolution),
     fixedNodes: fixedNodeList(model, dofs, fixedDof),
     nodeLoad: nodeLoads(model, dofs, loadPerDof),
     nodeDof: dofs.nodeDof,
@@ -309,6 +317,45 @@ function readCavityTemperatures(
 }
 
 /**
+ * The node-to-interior links as the balance needs them.
+ *
+ * Mirrors the surface half of the volumetric assembly entry for entry — same
+ * `2·k·A_node/d`, same skips — so if the two ever drift apart the energy residual stops
+ * closing, which is exactly the signal we want.
+ */
+function interiorEdges(
+  model: ThermalModel,
+  scenario: Scenario,
+  dofs: DofMap,
+  solution: Float64Array,
+): InteriorEdges | undefined {
+  if (dofs.volumes.length === 0) return undefined;
+  const node: number[] = [];
+  const conductance: number[] = [];
+  const cellTemperature: number[] = [];
+
+  for (const volume of dofs.volumes) {
+    const part = model.parts[volume.mesh.partIndex];
+    const k = resolvePart(part, scenario.partOverrides[part.id]).material.k;
+    if (!(k > 0)) continue;
+    for (let which = part.nodeRange[0]; which < part.nodeRange[1]; which++) {
+      const cell = volume.mesh.nodeCell[which];
+      if (cell < 0 || dofs.nodeDof[which] < 0) continue;
+      const g = (2 * k * model.nodeArea[which]) / volume.mesh.cellSize;
+      if (!(g > 0)) continue;
+      node.push(which);
+      conductance.push(g);
+      cellTemperature.push(solution[volume.dofBase + cell]);
+    }
+  }
+  return {
+    node: Uint32Array.from(node),
+    conductance: Float64Array.from(conductance),
+    cellTemperature: Float64Array.from(cellTemperature),
+  };
+}
+
+/**
  * The shell conductances as an undirected edge list for the balance.
  *
  * Mirrors `assembleSystem`'s conduction stencil entry for entry — same cotangent
@@ -320,9 +367,10 @@ function conductionEdges(model: ThermalModel, scenario: Scenario, dofs: DofMap):
   const conductance = new Float64Array(model.triCount * 3);
   let edgeCount = 0;
 
-  const sheetConductance = model.parts.map((part) => {
+  const volumetric = volumetricParts(dofs);
+  const sheetConductance = model.parts.map((part, index) => {
     const resolved = resolvePart(part, scenario.partOverrides[part.id]);
-    return resolved.bodyType === 'insulator'
+    return resolved.bodyType === 'insulator' || volumetric.has(index)
       ? 0
       : resolved.material.k * conductionThickness(part, resolved.thickness);
   });

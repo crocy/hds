@@ -46,6 +46,13 @@ export interface RaycastOptions {
   maxDistance?: number;
   /** Original triangle index to ignore — normally the face the ray was cast from. */
   skipTriangle?: number;
+  /**
+   * Rejects triangles by original index, as `ClosestPointOptions.accept` does.
+   * Voxelisation uses it to count crossings of one part's shell alone, so a ray
+   * through the assembly around it still reads that part's own parity. Must not
+   * itself query this BVH: the traversal stack is shared.
+   */
+  accept?: (triangle: number) => boolean;
 }
 
 export interface BvhHit {
@@ -329,6 +336,7 @@ function traverseRay(
 
   const minDistance = options.minDistance ?? 0;
   const skipTriangle = options.skipTriangle ?? -1;
+  const acceptTriangle = options.accept;
   let maxDistance = options.maxDistance ?? Infinity;
 
   const { bounds, offset, leafSize, triIndex, triVerts, stack } = bvh;
@@ -366,6 +374,7 @@ function traverseRay(
       const local = start + k;
       const triangle = triIndex[local];
       if (triangle === skipTriangle) continue;
+      if (acceptTriangle && !acceptTriangle(triangle)) continue;
       const distance = intersectTriangle(triVerts, local * 9, ox, oy, oz, dx, dy, dz);
       if (!(distance >= minDistance) || distance > maxDistance) continue;
       if (nearestOnly) {
