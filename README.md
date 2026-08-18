@@ -78,26 +78,31 @@ interface.
 
 The solver is checked against analytical results — a 1D fin, an isothermal plate, and a
 two-part contact with known series resistance — and energy conservation is asserted on
-every solve. Each sealed cavity's net flow is asserted to be zero too, which is what
-stops a trapped pocket quietly becoming a heat sink.
+every solve. A slab filled with cells is checked against `t/(k·A)` at three grid
+resolutions, which is what says the volumetric mode means anything. Each sealed cavity's
+net flow is asserted to be zero too, which is what stops a trapped pocket quietly
+becoming a heat sink — though note that until walls were joined by sight line, every
+pocket was walled by a single part and that assertion passed for free.
 
 There is also an end-to-end test against the TBTE housing in this repo. Read its header
 before trusting any single number from it: the known-good prior run is a **mid-surface**
 model carrying one side of each sheet, so its 61 W is the loss from the skin facing
 ambient and is *not* comparable to our total. We solve the sheet solid the CAD actually
-contains, and report 82.5 W — all of it through that same skin, since a sealed pocket has
+contains, and report 93.3 W — all of it through that same skin, since a sealed pocket has
 no other exit. The gap is a heat path the reference mesh has no interior to carry: the
-buried block radiating across the pocket.
+buried block radiating across the pocket, whose walls the block and the skin both belong
+to. It read 82.5 W while cavities were grouped by shared mesh edge alone, which put the
+block in a pocket of its own and left that path claimed but absent.
 
 Two caveats worth knowing before reading the plots:
 
-- The fin length the test prints (97.4 mm) is **not asserted**. It does not match the
+- The fin length the test prints (94.3 mm) is **not asserted**. It does not match the
   ≈46 mm this file claimed for a long time, but that figure was never comparable: fitting
   the same decay over the reference's *own* field gives 104 mm across the whole model and
   34–45 mm restricted to the first 50–100 mm. So ≈46 mm is a near-field fit and ours is a
   whole-model one — section 10 of the design spec has the numbers. What is genuinely open
-  is the drift within our own numbers, 93.0 mm before cavities gained an air node against
-  97.4 mm after.
+  is the drift within our own numbers: 93.0 mm before cavities gained an air node, 97.4 mm
+  after, and 94.3 mm once those pockets were joined by sight line.
 - The reference run no longer bounds the total from above. Per-cavity conservation is
   what holds the model honest in its place — a check of internal consistency, which is a
   weaker thing than agreement with reality.

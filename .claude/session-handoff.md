@@ -1,6 +1,6 @@
 # Session handoff
 
-Last updated: 2026-08-16
+Last updated: 2026-08-18
 
 Read [README.md](../README.md) for what the tool does and
 [docs/superpowers/specs/](../docs/superpowers/specs/) for why it works the way it does.
@@ -14,35 +14,78 @@ boundary conditions, solve in a worker, read the field in 3D plus five analysis 
 save and reload projects. Verified by hand against `ohisje - TBTE 2x116.step` — 7 parts,
 10 472 triangles, solve in ~460 ms.
 
-Gates: `pnpm typecheck`, `pnpm lint`, `pnpm test` (435+) and `pnpm build` all pass.
+Gates: `pnpm typecheck`, `pnpm lint` and `pnpm test` (492) all pass.
+
+## What changed on 2026-08-18
+
+Driven by a user assembly (`sestava` / `ohisje - OK`) that solved to **zero watts** — a
+200 °C block with no metal-to-metal joint anywhere.
+
+- **78c744a** — cavities are now merged by line of sight, not shared mesh edge alone.
+  Parts separated by a gap share no edge, so every pocket was walled by a single part,
+  and a pocket walled by one part equilibrates with it and carries nothing. This was
+  true of the TBTE reference too: all seven of its cavities were one-part, its header
+  claimed a pocket path that did not exist, and its watts went through the bolted
+  joints. TBTE now reads 93.3 W against 82.5 W.
+- **5002691** — the balance no longer bills a contact onto an `insulator` part. The
+  assembly always skipped those links; the balance read contacts off the scenario and
+  charged the joint for the full drop onto a part merely *reported* at ambient — 2.3e7 W
+  on a real model, condemning an otherwise sound field. Such a joint now warns.
+- **f190205** — new `solid` body type: the part is filled with cells and conducted in
+  3D. A thick low-k body conducted as a sheet short-circuits its own thickness along its
+  skin, which is fatal for insulation (Bi ≈ 9 for 40 mm of glass wool against ≈5e-4 for
+  1 mm steel). Verified against the analytic slab at three grid resolutions.
+- **263f204** — clicking a cavity row shows that pocket's walls alone.
+- **5effe7d** — a joint offers the `k/t` of the low-k part across it.
+
+Nothing pushed.
 
 ## Open follow-ups
 
 Numbered roughly by value, not by effort.
 
-1. **Cache the through-thickness pairing.** `pairThroughThickness` rebuilds a BVH and
+1. **A cavity wall cannot say "I am touching something".** Detection asks only "can this
+   face see the sky?", so a surface pressed against another part is still a cavity wall
+   and still convects and radiates to the pocket air — on top of conducting through its
+   contact. Measured on the user's housing: **72 % of a 9363 cm² pocket wall was within
+   0.5 mm of another part**, so whatever `h` and `ε` the user picks are applied to 3.5×
+   the area that faces a real void. The only workaround today is to scale `h` and `ε` by
+   the void fraction by hand. A third per-triangle state — enclosed, open, or in contact
+   — would fix it properly.
+2. **Cache the through-thickness pairing.** `pairThroughThickness` rebuilds a BVH and
    raycasts every node inside every `buildDofMap` call — about 0.2 s of a 0.73 s solve.
    It depends only on geometry plus resolved thickness and body type, so it belongs on
    `ThermalModel` as a cached `nodeOpposite: Int32Array`, invalidated when either
    override changes.
-2. **Path-length analysis is unaware of merged DOFs.** `buildConductionGraph` walks the
+3. **Path-length analysis is unaware of merged DOFs.** `buildConductionGraph` walks the
    raw node graph, so λ is fit over both skins as separate points carrying identical
    temperatures. Harmless numerically, but it means λ measures something slightly
    different from what the merged model implies — and λ is already an open question
    (see the README's verification caveats).
-3. **Three types are defined in two places.** `PlaneExtent` exists in both
+4. **Three types are defined in two places.** `PlaneExtent` exists in both
    `analysis/slice2d` and `viewer/sectionGizmo`; `ViewerState` lives in `ui/state` but
    the design wants it in `core`; `section.ts` had to extend `SectionPolyline` as
    `SectionPolylineDetail` because the base type lacks `partIndex`/`cavityId`.
-4. **`Scenario` cannot carry custom materials.** `PartOverride` holds only an id and
+5. **`Scenario` cannot carry custom materials.** `PartOverride` holds only an id and
    `resolvePart` refuses to guess, so the UI keeps a runtime registry and the solve
    worker re-registers copies travelling with each request. `Scenario.customMaterials`
    in core would remove the side channel.
-5. **Viewer has no per-layer overlay refresh.** `assignFaceRegionCavity` mutates
+6. **Viewer has no per-layer overlay refresh.** `assignFaceRegionCavity` mutates
    `triCavity` in place, and only `setModel` re-marks the cavity layer stale, so the app
    bumps a `modelRevision` and re-runs `setModel` restoring the camera by hand. A
    `ThermalScene.invalidateOverlay(kind)` would remove that dance.
-6. **Smaller:** convection boundary conditions solve but have no overlay; contact
+7. **`solid` parts are limited by the surface mesh, not the grid.** A flat-faced box
+   tessellates to the minimum triangle count and no deflection setting refines it, so a
+   40 mm wool block arrives as 28 triangles / 16 nodes. Two of those nodes landed in
+   *both* of its contacts, which is a zero-resistance bridge from the block to the
+   housing straight past the insulation — worth ~2 W there, but it puts a fake 200 °C
+   spot on the housing. Consider warning when one node carries two contacts to different
+   parts.
+8. **Re-import silently drops manual contacts.** Contact re-detection rebuilds the list
+   by proximity, so a hand-added joint across a gap wider than the 0.5 mm tolerance
+   disappears. It cost a session's confusion: a part went thermally afloat and only the
+   `adiabatic` case exposed it, because the cavity air had been quietly feeding it.
+9. **Smaller:** convection boundary conditions solve but have no overlay; contact
    re-detection runs on the main thread (~0.5 s, explicit user action);
    `geometry/build` still assigns default material ids, which belongs with the material
    library.
@@ -88,3 +131,12 @@ Numbered roughly by value, not by effort.
 - **Numbers from the TBTE test are not all comparable to the reference figure.** The
   README's verification section says which are and which are not. Read it before
   quoting one.
+- **A closed energy balance does not mean a connected model.** The assembly that started
+  the 2026-08-18 session solved to 0 W, converged, and reported a residual of 1e-9 W:
+  every part sat at exactly ambient and the balance was satisfied because nothing moved.
+  Check that the source actually injects watts, and that every part sheds some, before
+  reading any field. Per-part `injected` / `convection` / `radiation` in the balance is
+  where that shows.
+- **A saved project embeds its mesh, so detection fixes do not reach it.** `triCavity`
+  and the cavity list travel inside the `.hds.json`; re-import the CAD to pick up a
+  change to `detectCavities` or `detectContacts`.
