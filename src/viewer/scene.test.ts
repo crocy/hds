@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Bounds } from '@/core/types';
+import type { Bounds, Target, Vec3 } from '@/core/types';
 import { twoStripModel } from '@/core/testModels';
 import {
   DEFAULT_FOV,
@@ -262,6 +262,120 @@ describe('ThermalScene without a renderer', () => {
     expect(view.radius).toBeGreaterThan(0);
     scene.setCameraView({ ...view, theta: 0.4 });
     expect(scene.getCameraView().theta).toBe(0.4);
+    scene.dispose();
+  });
+});
+
+describe('ThermalScene click routing', () => {
+  const LEFT_PART: Target = { type: 'part', partId: 'part-0' };
+  const RIGHT_PART: Target = { type: 'part', partId: 'part-1' };
+  // `twoStripModel` lays its two parts end to end along X in the z = 0 plane.
+  const OVER_LEFT: Vec3 = [0.051, 0.007, 0];
+  const OVER_RIGHT: Vec3 = [0.151, 0.007, 0];
+  const OVER_NOTHING: Vec3 = [0.05, 0.5, 0];
+
+  function loadedScene(): ThermalScene {
+    const scene = new ThermalScene();
+    scene.setModel(twoStripModel());
+    return scene;
+  }
+
+  /**
+   * Node has no canvas, so a click is driven through the listener the canvas would
+   * call, and with no canvas to measure it always picks at the view centre — which
+   * is why these tests aim the camera at a part instead of moving the pointer.
+   */
+  function clickInViewport(scene: ThermalScene, shiftKey = false): void {
+    const listeners = scene as unknown as { onPointerUp(event: PointerEvent): void };
+    listeners.onPointerUp({
+      pointerId: 1,
+      clientX: 0,
+      clientY: 0,
+      button: 0,
+      shiftKey,
+    } as unknown as PointerEvent);
+  }
+
+  function aimAt(scene: ThermalScene, target: Vec3): void {
+    scene.setCameraView({ ...scene.getCameraView(), target });
+  }
+
+  it('aims the camera at whichever part the test means to click', () => {
+    const scene = loadedScene();
+    aimAt(scene, OVER_LEFT);
+    expect(scene.pickAt(0, 0)?.target).toEqual(LEFT_PART);
+    aimAt(scene, OVER_RIGHT);
+    expect(scene.pickAt(0, 0)?.target).toEqual(RIGHT_PART);
+    aimAt(scene, OVER_NOTHING);
+    expect(scene.pickAt(0, 0)).toBeNull();
+    scene.dispose();
+  });
+
+  it('replaces the selection and leaves the draft alone when not collecting', () => {
+    const scene = loadedScene();
+    aimAt(scene, OVER_LEFT);
+    clickInViewport(scene);
+    expect(scene.getSelection()).toEqual([LEFT_PART]);
+
+    aimAt(scene, OVER_RIGHT);
+    clickInViewport(scene);
+    expect(scene.getSelection()).toEqual([RIGHT_PART]);
+    expect(scene.getDraft()).toEqual([]);
+    scene.dispose();
+  });
+
+  it('stages into the draft and toggles a repeat back out while collecting', () => {
+    const scene = loadedScene();
+    scene.setSelection([LEFT_PART]);
+    scene.setCollecting(true);
+
+    aimAt(scene, OVER_LEFT);
+    clickInViewport(scene);
+    expect(scene.getDraft()).toEqual([LEFT_PART]);
+
+    aimAt(scene, OVER_RIGHT);
+    clickInViewport(scene);
+    expect(scene.getDraft()).toEqual([LEFT_PART, RIGHT_PART]);
+
+    clickInViewport(scene);
+    expect(scene.getDraft()).toEqual([LEFT_PART]);
+
+    // The part tree and the contacts panel both read the selection; staging a group
+    // must not move it under them.
+    expect(scene.getSelection()).toEqual([LEFT_PART]);
+    scene.dispose();
+  });
+
+  it('emits onDraftChange in place of onSelectionChange while collecting', () => {
+    const scene = loadedScene();
+    const drafts: Target[][] = [];
+    const selections: Target[][] = [];
+    scene.setHandlers({
+      onDraftChange: (draft) => drafts.push(draft),
+      onSelectionChange: (selection) => selections.push(selection),
+    });
+
+    scene.setCollecting(true);
+    aimAt(scene, OVER_LEFT);
+    clickInViewport(scene, true);
+    expect(drafts).toEqual([[LEFT_PART]]);
+    expect(selections).toEqual([]);
+
+    scene.setCollecting(false);
+    clickInViewport(scene);
+    expect(drafts).toHaveLength(1);
+    expect(selections).toEqual([[LEFT_PART]]);
+    scene.dispose();
+  });
+
+  it('keeps the staged group when a click misses the model', () => {
+    const scene = loadedScene();
+    scene.setCollecting(true);
+    aimAt(scene, OVER_LEFT);
+    clickInViewport(scene);
+    aimAt(scene, OVER_NOTHING);
+    clickInViewport(scene);
+    expect(scene.getDraft()).toEqual([LEFT_PART]);
     scene.dispose();
   });
 });

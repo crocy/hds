@@ -33,6 +33,7 @@ import type {
   ThermalModel,
   Vec3,
 } from '@/core/types';
+import { applySelection } from '@/core/targets';
 import { resolveScaleRange, srgbToLinear, writeVertexColors } from './colormap';
 import { Overlays, type OverlayKind } from './overlays';
 import { Picker, worldPerPixel, type PickHit, type SelectionMode } from './picking';
@@ -226,6 +227,8 @@ export interface ThermalSceneHandlers {
   /** Fires at most once per animation frame while the pointer moves; null on leave. */
   onHover?(hover: HoverEvent | null): void;
   onSelectionChange?(selection: Target[], hit: PickHit | null): void;
+  /** Fires in place of `onSelectionChange` while collecting; the selection is untouched. */
+  onDraftChange?(draft: Target[], hit: PickHit | null): void;
   /** Fires on every gizmo drag step; the field the caller supplied is dropped as it moves. */
   onSectionPlaneChange?(plane: SectionPlane): void;
   /** Fires once the camera settles, not on every frame of a drag. */
@@ -300,6 +303,7 @@ export class ThermalScene {
   /** True while the view is still the automatic framing, so a resize may re-frame. */
   private viewIsFramed = false;
 
+  private collecting = false;
   private pointerMode: PointerMode = 'none';
   private pointerId: number | null = null;
   private lastPointer = { x: 0, y: 0 };
@@ -601,6 +605,20 @@ export class ThermalScene {
   clearSelection(): void {
     this.picker.clearSelection();
     this.invalidate();
+  }
+
+  /** While collecting, a click stages into the draft and leaves the selection alone. */
+  setCollecting(collecting: boolean): void {
+    this.collecting = collecting;
+  }
+
+  setDraft(targets: readonly Target[]): void {
+    this.picker.setDraft(targets);
+    this.invalidate();
+  }
+
+  getDraft(): Target[] {
+    return this.picker.getDraft();
   }
 
   /** Raw query at a client point, for the UI's own hit tests. No side effects. */
@@ -925,6 +943,15 @@ export class ThermalScene {
     // what lets shift mean "pan" while dragging and "add to selection" on a click.
     if (mode !== 'section' && this.pointerTravel <= CLICK_SLOP_PIXELS && event.button === 0) {
       const hit = this.pickAt(event.clientX, event.clientY);
+      if (this.collecting) {
+        // Always additive: staging a group is a series of toggles, so a plain click
+        // adds a member rather than throwing the rest of the group away.
+        const draft = applySelection(this.picker.getDraft(), hit?.target ?? null, true);
+        this.picker.setDraft(draft);
+        this.invalidate();
+        this.handlers.onDraftChange?.(draft, hit);
+        return;
+      }
       const selection = this.picker.select(hit?.target ?? null, event.shiftKey);
       this.invalidate();
       this.handlers.onSelectionChange?.(selection, hit);

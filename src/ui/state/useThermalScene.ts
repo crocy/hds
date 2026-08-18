@@ -33,6 +33,7 @@ export function useThermalScene(handlers: ThermalSceneHandlers): MountedScene {
         onHover: (hover) => handlersRef.current.onHover?.(hover),
         onSelectionChange: (selection, hit) =>
           handlersRef.current.onSelectionChange?.(selection, hit),
+        onDraftChange: (draft, hit) => handlersRef.current.onDraftChange?.(draft, hit),
         onSectionPlaneChange: (plane) => handlersRef.current.onSectionPlaneChange?.(plane),
         onCameraChange: (view) => handlersRef.current.onCameraChange?.(view),
       },

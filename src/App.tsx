@@ -147,6 +147,7 @@ function Workspace() {
     () => ({
       onHover: (hover) => hoverStore.set(hover),
       onSelectionChange: (selection) => dispatch({ type: 'view/setSelection', selection }),
+      onDraftChange: (targets) => dispatch({ type: 'view/setBcDraft', targets }),
       // The gizmo can also be dragged directly; its offset is folded back into state
       // so the slider, the slice solve and the project file all agree on one plane.
       onSectionPlaneChange: (plane) =>
@@ -200,6 +201,15 @@ function Workspace() {
     if (!scene) return;
     if (!sameTargets(scene.getSelection(), viewer.selection)) scene.setSelection(viewer.selection);
   }, [scene, viewer.selection]);
+
+  useEffect(() => {
+    if (!scene) return;
+    if (!sameTargets(scene.getDraft(), viewer.bcDraft)) scene.setDraft(viewer.bcDraft);
+  }, [scene, viewer.bcDraft]);
+
+  useEffect(() => {
+    scene?.setCollecting(viewer.bcCollecting);
+  }, [scene, viewer.bcCollecting]);
 
   useEffect(() => {
     scene?.setSelectionMode(viewer.selectionMode);
@@ -424,7 +434,13 @@ function Workspace() {
       } else if (event.key === 'f') {
         scene?.resetView();
       } else if (event.key === 'Escape') {
-        dispatch({ type: 'view/setSelection', selection: [] });
+        // Cancelling the group you are building is the nearer instinct than
+        // clearing the selection, so the draft goes first.
+        if (stateRef.current.viewer.bcDraft.length > 0) {
+          dispatch({ type: 'view/setBcDraft', targets: [] });
+        } else {
+          dispatch({ type: 'view/setSelection', selection: [] });
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -590,6 +606,8 @@ function applyViewerState(scene: ThermalScene, viewer: ViewerState, sectionOffse
   scene.setWireframe(viewer.wireframe);
   scene.setSelectionMode(viewer.selectionMode);
   scene.setSelection(viewer.selection);
+  scene.setDraft(viewer.bcDraft);
+  scene.setCollecting(viewer.bcCollecting);
   for (const kind of OVERLAY_KINDS) scene.setOverlayVisible(kind, viewer.overlays[kind]);
   scene.setSectionEnabled(viewer.section.enabled);
   scene.setSectionClipping(viewer.section.clipping);

@@ -1,6 +1,7 @@
 /**
  * Raycast selection at four granularities — part, face, edge, point — plus the
- * highlight layer that draws what is hovered and what is selected.
+ * highlight layers that draw what is hovered, what is selected, and what is
+ * staged into a boundary-condition group.
  *
  * Everything above the `Picker` class is pure array maths with no renderer
  * involved, so it is unit-testable in Node. `Picker` is the thin three.js shell
@@ -442,6 +443,8 @@ export function describeTarget(model: ThermalModel, target: Target): string {
 
 export const HOVER_COLOR = 0xffffff;
 export const SELECTION_COLOR = 0x22aaff;
+/** The boundary-condition group being staged. Amber, so it never reads as the selection. */
+export const DRAFT_COLOR = 0xffb020;
 
 const HIGHLIGHT_POINT_SIZE = 9;
 
@@ -458,7 +461,7 @@ class HighlightObjects {
   private lineIndices = new Uint32Array(0);
   private pointPositions = new Float32Array(0);
 
-  constructor(color: number, faceOpacity: number) {
+  constructor(color: number, faceOpacity: number, renderOrder: number) {
     const faceMaterial = new THREE.MeshBasicMaterial({
       color,
       transparent: true,
@@ -490,7 +493,7 @@ class HighlightObjects {
     this.lines = new THREE.LineSegments(this.lineGeometry, lineMaterial);
     this.points = new THREE.Points(this.pointGeometry, pointMaterial);
     for (const object of [this.faces, this.lines, this.points]) {
-      object.renderOrder = 3;
+      object.renderOrder = renderOrder;
       object.frustumCulled = false;
       object.visible = false;
       this.group.add(object);
@@ -618,8 +621,11 @@ export type PickFilter = (partIndex: number, point: THREE.Vector3) => boolean;
 export class Picker {
   readonly object = new THREE.Group();
 
-  private readonly hoverHighlight = new HighlightObjects(HOVER_COLOR, 0.22);
-  private readonly selectionHighlight = new HighlightObjects(SELECTION_COLOR, 0.4);
+  // Render orders stack the three layers: selection at the bottom, then the draft
+  // being staged over it, then hover on top of both.
+  private readonly selectionHighlight = new HighlightObjects(SELECTION_COLOR, 0.4, 3);
+  private readonly draftHighlight = new HighlightObjects(DRAFT_COLOR, 0.4, 4);
+  private readonly hoverHighlight = new HighlightObjects(HOVER_COLOR, 0.22, 5);
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
 
@@ -629,6 +635,8 @@ export class Picker {
   private temperatures: Float32Array | null = null;
   private mode: SelectionMode = 'part';
   private selection: Target[] = [];
+  /** Mirrored from React, like `selection`: this is not the source of truth. */
+  private draft: Target[] = [];
   private filter: PickFilter | null = null;
   private readonly edgePixelThreshold: number;
   private readonly pointPixelThreshold: number;
@@ -640,19 +648,26 @@ export class Picker {
     this.edgePixelThreshold = options.edgePixelThreshold ?? 14;
     this.pointPixelThreshold = options.pointPixelThreshold ?? 18;
     this.object.name = 'picking-highlights';
-    this.object.add(this.selectionHighlight.group, this.hoverHighlight.group);
+    this.object.add(
+      this.selectionHighlight.group,
+      this.draftHighlight.group,
+      this.hoverHighlight.group,
+    );
   }
 
   setModel(model: ThermalModel | null, mesh: THREE.Mesh | null): void {
     this.model = model;
     this.mesh = mesh;
     this.selection = [];
+    this.draft = [];
     this.grid = model && model.nodeCount > 0 ? buildNodeGrid(model.nodes, model.nodeCount) : null;
     const position = (mesh?.geometry.getAttribute('position') as THREE.BufferAttribute) ?? null;
     this.hoverHighlight.setPositionSource(position);
     this.selectionHighlight.setPositionSource(position);
+    this.draftHighlight.setPositionSource(position);
     this.hoverHighlight.clear();
     this.selectionHighlight.clear();
+    this.draftHighlight.clear();
   }
 
   setTemperatures(temperatures: Float32Array | null): void {
@@ -668,6 +683,7 @@ export class Picker {
     this.mode = mode;
     this.hoverHighlight.clear();
     this.refreshSelectionHighlight();
+    this.refreshDraftHighlight();
   }
 
   getMode(): SelectionMode {
@@ -799,10 +815,26 @@ export class Picker {
     this.setSelection([]);
   }
 
+  setDraft(targets: readonly Target[]): void {
+    this.draft = [...targets];
+    this.refreshDraftHighlight();
+  }
+
+  getDraft(): Target[] {
+    return [...this.draft];
+  }
+
   private refreshSelectionHighlight(): void {
     this.selectionHighlight.clear();
     if (this.model && this.selection.length > 0) {
       this.draw(this.selectionHighlight, this.model, this.selection);
+    }
+  }
+
+  private refreshDraftHighlight(): void {
+    this.draftHighlight.clear();
+    if (this.model && this.draft.length > 0) {
+      this.draw(this.draftHighlight, this.model, this.draft);
     }
   }
 
@@ -830,6 +862,7 @@ export class Picker {
   dispose(): void {
     this.hoverHighlight.dispose();
     this.selectionHighlight.dispose();
+    this.draftHighlight.dispose();
     this.object.clear();
     this.model = null;
     this.mesh = null;

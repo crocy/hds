@@ -40,6 +40,7 @@ export type {
 } from './scene';
 
 export {
+  DRAFT_COLOR,
   HOVER_COLOR,
   SELECTION_COLOR,
   SELECTION_MODES,
