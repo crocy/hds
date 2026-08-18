@@ -278,6 +278,23 @@ export function raycastNearest(
   return { triangle: buffer.triangles[0], distance: buffer.distances[0] };
 }
 
+/**
+ * The closest hit, into a caller-owned buffer. Returns the triangle index, or −1.
+ * The allocation-free form of `raycastNearest`, for a fan of rays per triangle.
+ */
+export function raycastNearestInto(
+  bvh: Bvh,
+  origin: ArrayLike<number>,
+  direction: ArrayLike<number>,
+  buffer: HitBuffer,
+  options: RaycastOptions = {},
+): number {
+  buffer.count = 0;
+  return traverseRay(bvh, origin, direction, options, buffer, true) === 0
+    ? -1
+    : buffer.triangles[0];
+}
+
 /** Hit count only — no hit records, no allocation. */
 export function countRayHits(
   bvh: Bvh,

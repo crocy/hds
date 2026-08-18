@@ -36,8 +36,10 @@ Steady-state conduction across the tessellated surface — each triangle carries
 `k × thickness` — with natural convection and radiation to ambient at every node.
 Parts are joined by explicit contacts carrying a finite conductance.
 
-Enclosed cavities are detected by occlusion and each holds its own trapped-air
-temperature, solved as a real unknown alongside the nodes. A sealed pocket is therefore a
+Enclosed cavities are detected by occlusion, and walls that can see each other across
+the void are joined into one pocket — parts separated by a gap share no mesh edge, and a
+pocket walled by a single part equilibrates with it and carries nothing. Each pocket
+holds its own trapped-air temperature, solved as a real unknown alongside the nodes. A sealed pocket is therefore a
 thermal path between the walls that bound it rather than somewhere heat can vanish into:
 what flows in flows back out, and the cavities panel reports each pocket's air
 temperature and shows that its books balanced.

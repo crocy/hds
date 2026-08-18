@@ -72,6 +72,42 @@ describe('detectCavities', () => {
     );
   });
 
+  it('joins the two walls of one pocket into a single cavity', () => {
+    // The housing case: a sheet-metal shell with a body floating inside it. The two
+    // surfaces bound the same trapped air but share no edge, so grouping by mesh
+    // adjacency alone gives each its own cavity — and a cavity walled by one part
+    // equilibrates with that wall and carries no heat between the two.
+    const shell = mergeMeshes(
+      boxMesh([0.2, 0.2, 0.2], [0, 0, 0], 0),
+      invertWinding(boxMesh([0.18, 0.18, 0.18], [0.01, 0.01, 0.01], 0)),
+    );
+    const built = modelFromMesh(mergeMeshes(shell, boxMesh([0.06, 0.06, 0.06], [0.07, 0.07, 0.07], 1)), [
+      { name: 'shell' },
+      { name: 'block' },
+    ]);
+    const result = detectCavities(built);
+
+    expect(result.cavities).toHaveLength(1);
+    expect(result.cavities[0].triCount).toBe(24);
+    const walls = new Set(trianglesOfCavity(built, 1).map((t) => built.triPart[t]));
+    expect([...walls].sort()).toEqual([0, 1]);
+  });
+
+  it('keeps two pockets that cannot see each other apart', () => {
+    // Merging is by line of sight, not by "everything enclosed is one volume": two
+    // sealed shells side by side are two pockets and have to stay two.
+    const shellAt = (x: number) =>
+      mergeMeshes(
+        boxMesh([0.2, 0.2, 0.2], [x, 0, 0], 0),
+        invertWinding(boxMesh([0.18, 0.18, 0.18], [x + 0.01, 0.01, 0.01], 0)),
+      );
+    const built = modelFromMesh(mergeMeshes(shellAt(0), shellAt(0.5)), [{ name: 'shells' }]);
+    const result = detectCavities(built);
+
+    expect(result.cavities).toHaveLength(2);
+    expect(result.cavities.map((cavity) => cavity.triCount)).toEqual([12, 12]);
+  });
+
   it('leaves a lone box entirely open to ambient', () => {
     const built = modelFromMesh(boxMesh([0.2, 0.2, 0.2]), [{ name: 'box' }]);
     const result = detectCavities(built);

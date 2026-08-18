@@ -15,10 +15,17 @@
  * same watts and both are comparable to the reference's 61 W. Before that they were
  * 101.5 W and 64.8 W, and the difference was heat sinking into a sealed box.
  *
- * We read 82.5 W where the reference reads 61 W, over the same surface. The pocket
+ * We read 93.3 W where the reference reads 61 W, over the same surface. The pocket
  * carries heat from the buried block to the skin by convection and radiation across
  * it, which is a path a mesh with no interior faces does not have at all, and the skin
- * runs 33.5 K above ambient here against the reference's 22.9 K.
+ * runs 38.5 K above ambient here against the reference's 22.9 K.
+ *
+ * That path only became real when cavity walls started being joined by sight line as
+ * well as by shared edge. Grouping on edges alone gave seven cavities, one per part,
+ * and a pocket walled by a single part equilibrates with it and moves nothing: the
+ * block sat in a 200 °C cavity of its own and shed its 82.5 W through the bolted
+ * joints instead. The gap between that and today's 93.3 W is the pocket, finally
+ * carrying what this comment always said it did.
  *
  * The two skins are merged onto one DOF per in-plane position wherever they can be
  * paired, so the sheet conducts its full thickness in plane and is isothermal across
@@ -272,29 +279,36 @@ describe('TBTE housing', () => {
     expect(totalArea - enclosedArea).toBeLessThan(REFERENCE_MESH_AREA * 1.1);
 
     // ...and the heat leaving that skin is the same order as the reference's 61 W.
-    // Measured 82.5 W: higher because the sealed pocket carries the buried block's heat
+    // Measured 93.3 W: higher because the sealed pocket carries the buried block's heat
     // to the skin, and the reference mesh has no interior for it to cross. That path is
     // mostly radiation, so this bound is only as trustworthy as the enclosure emissivity
     // driving it — 0.2, confirmed against the hardware as a bare aluminium block, which
     // is the oxidised-bare figure and sits consistently with the SS304 skin's 0.15.
     // Lower it and this comes back down towards the reference; it should not be lowered
     // to make that happen.
-    expect(exposed.watts).toBeGreaterThan(70);
-    expect(exposed.watts).toBeLessThan(95);
+    //
+    // It read 82.5 W until the pocket's walls were joined by sight line. Before that the
+    // block's own surface was a cavity of its own, walled by nothing else, so it sat at
+    // 200 °C and carried nothing: the path described in the paragraph above was claimed
+    // here but not present, and the watts came through the bolted joints alone. Agreement
+    // with the reference got *worse* when it appeared, which is the expected direction —
+    // the reference is a mid-surface mesh and has no pocket to carry it.
+    expect(exposed.watts).toBeGreaterThan(80);
+    expect(exposed.watts).toBeLessThan(105);
 
     // The falsifiable prediction of the cavity air node, and the point of this test:
     // ambient is the only exit, so the total loss and the loss through the open-air
     // skin are the same watts. A sealed pocket that still sank heat would show up here
     // as a total above the skin's figure, which is what 101.5 W against 64.8 W was.
+    // With the ratio pinned this tightly, the bracket above bounds the total too.
     const loss = result.balance.lostByConvection + result.balance.lostByRadiation;
     expect(loss / exposed.watts).toBeCloseTo(1, 4);
-    expect(loss).toBeLessThan(90);
     // Nothing is stranded any more: every cavity DOF is assembled into somebody's row.
     expect(result.warnings.join('\n')).not.toContain('exchange no heat with anything');
 
-    // Each pocket conserves what crosses it, and sits between the block that heats it
-    // and the room. The four hottest are wholly bounded by the pinned block, so their
-    // air reaches 200 °C and carries nothing at all. Measured worst: 4.7e-5 W.
+    // The pocket conserves what crosses it, and sits between the block that heats it and
+    // the room — strictly between, now that it is walled by the block *and* the skin
+    // rather than by either alone. Measured: 74.6 °C, net 1.1e-4 W.
     expect(result.balance.perCavity).toHaveLength(scenario.cavities.length);
     for (const cavity of result.balance.perCavity) {
       expect(Math.abs(cavity.netFlow) / loss).toBeLessThan(1e-5);

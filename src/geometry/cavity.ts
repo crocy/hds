@@ -37,10 +37,21 @@
  * shared edges. Edges are matched by welded position rather than node index, so
  * this works on an unwelded tessellation and joins triangles across parts that
  * genuinely meet.
+ *
+ * 4. Groups that can see each other across the void are then merged, because parts
+ *    separated by a gap share no edge and the flood fill alone leaves every pocket
+ *    walled by a single part — which carries no heat at all. See `mergeGroupsInSight`.
  */
 
 import type { Cavity, CavityCondition, ThermalModel } from '../core/types';
-import { buildBvh, countRayHits, type Bvh, type RaycastOptions } from './bvh';
+import {
+  buildBvh,
+  countRayHits,
+  createHitBuffer,
+  raycastNearestInto,
+  type Bvh,
+  type RaycastOptions,
+} from './bvh';
 import { clusterPoints } from './spatialHash';
 
 /** triCavity is a Uint8Array, so 0 is open air and 255 is the highest usable id. */
@@ -166,11 +177,8 @@ export function detectCavities(
   const minArea = options.minArea ?? meanTriangleArea(model) * DEFAULT_MIN_CAVITY_AREA_RATIO;
   const condition = options.condition ?? 'stillAir';
 
-  const openSkyFraction = measureOpenSky(model, {
-    bvh: options.bvh ?? buildBvh(model),
-    rayCount,
-    offset,
-  });
+  const rays: OpenSkyParameters = { bvh: options.bvh ?? buildBvh(model), rayCount, offset };
+  const openSkyFraction = measureOpenSky(model, rays);
   const insideFacing = new Uint8Array(model.triCount);
   for (let t = 0; t < model.triCount; t++) {
     insideFacing[t] = openSkyFraction[t] < openSkyThreshold ? 1 : 0;
@@ -179,7 +187,7 @@ export function detectCavities(
   const neighbours = buildTriangleNeighbours(model, weldTolerance);
   cleanUpInsideFacing(insideFacing, neighbours, cleanupPasses);
 
-  const groups = groupByNeighbour(insideFacing, neighbours);
+  const groups = mergeGroupsInSight(model, groupByNeighbour(insideFacing, neighbours), rays);
   const triCavity = model.triCavity;
   triCavity.fill(0);
 
@@ -271,7 +279,7 @@ interface OpenSkyParameters {
  */
 function measureOpenSky(model: ThermalModel, parameters: OpenSkyParameters): Float32Array {
   const { bvh, rayCount, offset } = parameters;
-  const { nodes, tris, triNormal, triCount } = model;
+  const { triCount } = model;
   const openSky = new Float32Array(triCount);
 
   const rayOptions: RaycastOptions = { minDistance: 0, skipTriangle: -1 };
@@ -281,34 +289,145 @@ function measureOpenSky(model: ThermalModel, parameters: OpenSkyParameters): Flo
   const tangentV = new Float64Array(3);
 
   for (let t = 0; t < triCount; t++) {
-    const nx = triNormal[t * 3];
-    const ny = triNormal[t * 3 + 1];
-    const nz = triNormal[t * 3 + 2];
-    const a = tris[t * 3] * 3;
-    const b = tris[t * 3 + 1] * 3;
-    const c = tris[t * 3 + 2] * 3;
-    origin[0] = (nodes[a] + nodes[b] + nodes[c]) / 3 + nx * offset;
-    origin[1] = (nodes[a + 1] + nodes[b + 1] + nodes[c + 1]) / 3 + ny * offset;
-    origin[2] = (nodes[a + 2] + nodes[b + 2] + nodes[c + 2]) / 3 + nz * offset;
-    orthonormalBasis(nx, ny, nz, tangentU, tangentV);
+    fanOrigin(model, t, offset, origin, tangentU, tangentV);
     rayOptions.skipTriangle = t;
 
     let escaped = 0;
     for (let k = 0; k < rayCount; k++) {
-      const sinTheta = Math.sqrt((k + 0.5) / rayCount);
-      const cosTheta = Math.sqrt(Math.max(0, 1 - sinTheta * sinTheta));
-      const phi = k * GOLDEN_ANGLE;
-      const su = Math.cos(phi) * sinTheta;
-      const sv = Math.sin(phi) * sinTheta;
-      direction[0] = nx * cosTheta + tangentU[0] * su + tangentV[0] * sv;
-      direction[1] = ny * cosTheta + tangentU[1] * su + tangentV[1] * sv;
-      direction[2] = nz * cosTheta + tangentU[2] * su + tangentV[2] * sv;
-
+      fanDirection(model, t, k, rayCount, tangentU, tangentV, direction);
       if (countRayHits(bvh, origin, direction, rayOptions) === 0) escaped++;
     }
     openSky[t] = escaped / rayCount;
   }
   return openSky;
+}
+
+/** Centroid nudged off the surface, with a basis for the outward hemisphere. */
+function fanOrigin(
+  model: ThermalModel,
+  triangle: number,
+  offset: number,
+  origin: Float64Array,
+  u: Float64Array,
+  v: Float64Array,
+): void {
+  const { nodes, tris, triNormal } = model;
+  const nx = triNormal[triangle * 3];
+  const ny = triNormal[triangle * 3 + 1];
+  const nz = triNormal[triangle * 3 + 2];
+  const a = tris[triangle * 3] * 3;
+  const b = tris[triangle * 3 + 1] * 3;
+  const c = tris[triangle * 3 + 2] * 3;
+  origin[0] = (nodes[a] + nodes[b] + nodes[c]) / 3 + nx * offset;
+  origin[1] = (nodes[a + 1] + nodes[b + 1] + nodes[c + 1]) / 3 + ny * offset;
+  origin[2] = (nodes[a + 2] + nodes[b + 2] + nodes[c + 2]) / 3 + nz * offset;
+  orthonormalBasis(nx, ny, nz, u, v);
+}
+
+/** The kth ray of the fan. Shared, so the sight-line pass samples what the vote sampled. */
+function fanDirection(
+  model: ThermalModel,
+  triangle: number,
+  k: number,
+  rayCount: number,
+  u: Float64Array,
+  v: Float64Array,
+  out: Float64Array,
+): void {
+  const nx = model.triNormal[triangle * 3];
+  const ny = model.triNormal[triangle * 3 + 1];
+  const nz = model.triNormal[triangle * 3 + 2];
+  const sinTheta = Math.sqrt((k + 0.5) / rayCount);
+  const cosTheta = Math.sqrt(Math.max(0, 1 - sinTheta * sinTheta));
+  const phi = k * GOLDEN_ANGLE;
+  const su = Math.cos(phi) * sinTheta;
+  const sv = Math.sin(phi) * sinTheta;
+  out[0] = nx * cosTheta + u[0] * su + v[0] * sv;
+  out[1] = ny * cosTheta + u[1] * su + v[1] * sv;
+  out[2] = nz * cosTheta + u[2] * su + v[2] * sv;
+}
+
+/**
+ * Joins groups that can see each other across the void they bound.
+ *
+ * Edge adjacency alone gives one group per part: a housing wall and the block floating
+ * inside it bound the same trapped air but share no edge, because nothing welds two
+ * parts across a gap. That split is not cosmetic. A cavity carries one air temperature,
+ * so a pocket walled by a single part equilibrates with that part and then moves no
+ * heat at all — the block cannot reach the housing through the air, and a sealed
+ * assembly with no metal-to-metal joint solves to zero watts.
+ *
+ * Two surfaces bound the same volume exactly when a ray from one reaches the other
+ * without crossing anything, which is the same condition under which they exchange
+ * radiation. Taking the **nearest** hit is what makes that a sight line rather than a
+ * guess: a ray stopping at the first surface cannot tunnel through a wall into the
+ * pocket beyond, so two sealed shells side by side stay two cavities. Union-find takes
+ * the transitive closure, so an L-shaped pocket whose ends cannot see each other still
+ * comes out one cavity as long as something sees both.
+ */
+function mergeGroupsInSight(
+  model: ThermalModel,
+  groups: number[][],
+  parameters: OpenSkyParameters,
+): number[][] {
+  if (groups.length < 2) return groups;
+  const { bvh, rayCount, offset } = parameters;
+
+  const groupOf = new Int32Array(model.triCount).fill(-1);
+  groups.forEach((group, index) => {
+    for (const triangle of group) groupOf[triangle] = index;
+  });
+
+  const parent = new Int32Array(groups.length);
+  for (let g = 0; g < groups.length; g++) parent[g] = g;
+  const find = (start: number): number => {
+    let root = start;
+    while (parent[root] !== root) root = parent[root];
+    for (let g = start; parent[g] !== root; ) {
+      const next = parent[g];
+      parent[g] = root;
+      g = next;
+    }
+    return root;
+  };
+  let roots = groups.length;
+
+  const hits = createHitBuffer(1);
+  const rayOptions: RaycastOptions = { minDistance: 0, skipTriangle: -1 };
+  const origin = new Float64Array(3);
+  const direction = new Float64Array(3);
+  const tangentU = new Float64Array(3);
+  const tangentV = new Float64Array(3);
+
+  for (let index = 0; index < groups.length && roots > 1; index++) {
+    for (const triangle of groups[index]) {
+      if (roots === 1) break;
+      fanOrigin(model, triangle, offset, origin, tangentU, tangentV);
+      rayOptions.skipTriangle = triangle;
+      for (let k = 0; k < rayCount; k++) {
+        fanDirection(model, triangle, k, rayCount, tangentU, tangentV, direction);
+        const hit = raycastNearestInto(bvh, origin, direction, hits, rayOptions);
+        if (hit < 0 || groupOf[hit] < 0) continue;
+        const a = find(index);
+        const b = find(groupOf[hit]);
+        if (a === b) continue;
+        parent[b] = a;
+        roots--;
+      }
+    }
+  }
+
+  const merged = new Map<number, number[]>();
+  groups.forEach((group, index) => {
+    const root = find(index);
+    let bucket = merged.get(root);
+    if (!bucket) {
+      bucket = [];
+      merged.set(root, bucket);
+    }
+    for (const triangle of group) bucket.push(triangle);
+  });
+  return [...merged.values()];
 }
 
 /**
