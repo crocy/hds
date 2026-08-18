@@ -22,16 +22,11 @@ jobs:
       - uses: actions/checkout@v7
 
       # Installs pnpm and Node in one step, replacing pnpm/action-setup and
-      # actions/setup-node.
-      #
-      # The version lives here rather than in package.json's packageManager: this
-      # action needs pnpm 11+, and 11 will not run under the dev machine's corepack
-      # 0.24.0 shim, so pinning 11 there would break local `pnpm`. The action also
-      # refuses to run when both are set. The lockfile (v9) is byte-identical under
-      # 10 and 11, verified, so CI and local agree on this tree despite the split.
+      # actions/setup-node. The pnpm version comes from package.json's
+      # packageManager, so CI and a developer's machine cannot drift; the action
+      # refuses to run if a version input is given as well.
       - uses: pnpm/setup@v2
         with:
-          version: 11.22.0
           runtime: node@22
           cache: true
           # The action would run a bare `pnpm install`; installing explicitly keeps

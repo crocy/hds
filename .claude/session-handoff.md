@@ -56,6 +56,13 @@ Numbered roughly by value, not by effort.
   `tsconfig.json`, which made `typescript-eslint` refuse to pick a `tsconfigRootDir`
   and produced 364 parse errors. `eslint.config.js` now ignores `.claude` — leave that
   ignore in place.
+- **pnpm 11 needs corepack 0.35+.** The repo pins `pnpm@11.22.0` in `packageManager`,
+  which `pnpm/setup` in CI reads. Debian's packaged corepack (0.24.0, at
+  `/usr/share/nodejs/corepack`) cannot load pnpm 11 and dies with
+  `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`; a user-level `npm i -g corepack@latest`
+  into `~/.local` shadows it. Switching a checkout between pnpm 10 and 11 also makes
+  pnpm want to purge `node_modules`, which aborts without a TTY — delete the directory
+  and reinstall.
 - **TypeScript is pinned to 6.0.3 deliberately.** TS 7 (the Go port) typechecks fine but
   `typescript-eslint` will not load against it, which costs the react-hooks rules.
 - **Tests do not catch visual defects.** Every plot and viewer bug found so far was found
