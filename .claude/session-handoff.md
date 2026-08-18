@@ -14,29 +14,33 @@ boundary conditions, solve in a worker, read the field in 3D plus five analysis 
 save and reload projects. Verified by hand against `ohisje - TBTE 2x116.step` — 7 parts,
 10 472 triangles, solve in ~460 ms.
 
-Gates: `pnpm typecheck`, `pnpm lint` and `pnpm test` (492) all pass.
+Gates: `pnpm typecheck`, `pnpm lint` and `pnpm test` (609) all pass, and `pnpm build`.
+
+Published at **https://crocy.github.io/hds/**, deployed by
+`.github/workflows/deploy.yml` on every push to `main`. The deploy is gated on the
+full suite, so a broken commit cannot reach the public URL.
 
 ## What changed on 2026-08-18
 
 Driven by a user assembly (`sestava` / `ohisje - OK`) that solved to **zero watts** — a
 200 °C block with no metal-to-metal joint anywhere.
 
-- **78c744a** — cavities are now merged by line of sight, not shared mesh edge alone.
+- **31f4890** — cavities are now merged by line of sight, not shared mesh edge alone.
   Parts separated by a gap share no edge, so every pocket was walled by a single part,
   and a pocket walled by one part equilibrates with it and carries nothing. This was
   true of the TBTE reference too: all seven of its cavities were one-part, its header
   claimed a pocket path that did not exist, and its watts went through the bolted
   joints. TBTE now reads 93.3 W against 82.5 W.
-- **5002691** — the balance no longer bills a contact onto an `insulator` part. The
+- **e159813** — the balance no longer bills a contact onto an `insulator` part. The
   assembly always skipped those links; the balance read contacts off the scenario and
   charged the joint for the full drop onto a part merely *reported* at ambient — 2.3e7 W
   on a real model, condemning an otherwise sound field. Such a joint now warns.
-- **f190205** — new `solid` body type: the part is filled with cells and conducted in
+- **e886716** — new `solid` body type: the part is filled with cells and conducted in
   3D. A thick low-k body conducted as a sheet short-circuits its own thickness along its
   skin, which is fatal for insulation (Bi ≈ 9 for 40 mm of glass wool against ≈5e-4 for
   1 mm steel). Verified against the analytic slab at three grid resolutions.
-- **263f204** — clicking a cavity row shows that pocket's walls alone.
-- **5effe7d** — a joint offers the `k/t` of the low-k part across it.
+- **bb847b2** — clicking a cavity row shows that pocket's walls alone.
+- **980c335** — a joint offers the `k/t` of the low-k part across it.
 
 Nothing pushed.
 
@@ -92,9 +96,25 @@ Numbered roughly by value, not by effort.
 
 ## Traps that have already cost time
 
+- **The site is served from a subpath, so absolute asset URLs break.** `vite.config.ts`
+  sets `base: '/hds/'`, and anything reaching into `public/` must go through
+  `import.meta.env.BASE_URL` rather than a leading `/`. This already bit once: the OCCT
+  wasm was fetched from `/occt-import-js.wasm`, which under Pages returns the SPA's
+  `index.html`, and the loader died on `expected magic word 00 61 73 6d, found 3c 21 64
+  6f` — the bytes of `<!do`. STL and OBJ kept working, so only STEP broke, only in
+  production, and no test noticed. `base` is deliberately a constant rather than
+  build-only so dev runs on the same subpath and the next one cannot hide until deploy.
+
 - **Never `git add -A` while agents are running.** It has twice swept an agent's
   throwaway demo files into a commit, and once captured a mid-flight snapshot of a
   module. Stage explicit paths.
+- **Cite SHAs that are on `main`, not the ones you just made.** Work here happens in
+  worktrees and lands rebased, so the commit you wrote is not the commit that ships. The
+  2026-08-18 entries below originally cited five SHAs that existed but were not ancestors
+  of `main`; they would have been garbage-collected with the worktree branch, rotting
+  every reference. Before writing a SHA into this file, check it:
+  `git merge-base --is-ancestor <sha> main`.
+
 - **`.claude/worktrees/` holds other sessions' checkouts.** Each has its own
   `tsconfig.json`, which made `typescript-eslint` refuse to pick a `tsconfigRootDir`
   and produced 364 parse errors. `eslint.config.js` now ignores `.claude` — leave that

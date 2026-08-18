@@ -15,6 +15,23 @@ pnpm dev
 
 Other commands: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`.
 
+pnpm's version is pinned in `packageManager`. Running it needs corepack 0.34.7
+specifically — newer corepack requires a Node that Ubuntu does not ship yet — see
+`.claude/session-handoff.md` if `pnpm` will not start.
+
+## Deployment
+
+Live at **https://crocy.github.io/hds/**, rebuilt by GitHub Actions on every push to
+`main`. The workflow runs typecheck, lint and the full suite before it builds, so a
+broken commit cannot reach the public URL.
+
+The site is served from the `/hds/` subpath, which `vite.config.ts` sets as `base`.
+Anything that loads a file out of `public/` must resolve it through
+`import.meta.env.BASE_URL`, never a leading `/` — an absolute path silently returns
+`index.html` instead of the asset. `base` is a constant rather than build-only, so
+`pnpm dev` serves the same subpath and a mistake shows up locally rather than in
+production.
+
 ## Appearance
 
 The Display panel carries a system / dark / light choice, remembered per machine
