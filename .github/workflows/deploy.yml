@@ -24,10 +24,11 @@ jobs:
       # Installs pnpm and Node in one step, replacing pnpm/action-setup and
       # actions/setup-node.
       #
-      # version is set here rather than read from package.json's packageManager,
-      # which pins 10.33.2: this action needs pnpm 11+, and 11 cannot run under
-      # the corepack shim on the dev machine. The lockfile (v9) is byte-identical
-      # under both majors, verified, so the split is safe until corepack is updated.
+      # The version lives here rather than in package.json's packageManager: this
+      # action needs pnpm 11+, and 11 will not run under the dev machine's corepack
+      # 0.24.0 shim, so pinning 11 there would break local `pnpm`. The action also
+      # refuses to run when both are set. The lockfile (v9) is byte-identical under
+      # 10 and 11, verified, so CI and local agree on this tree despite the split.
       - uses: pnpm/setup@v2
         with:
           version: 11.22.0
