@@ -56,13 +56,29 @@ Numbered roughly by value, not by effort.
   `tsconfig.json`, which made `typescript-eslint` refuse to pick a `tsconfigRootDir`
   and produced 364 parse errors. `eslint.config.js` now ignores `.claude` — leave that
   ignore in place.
-- **pnpm 11 needs corepack 0.35+.** The repo pins `pnpm@11.22.0` in `packageManager`,
-  which `pnpm/setup` in CI reads. Debian's packaged corepack (0.24.0, at
-  `/usr/share/nodejs/corepack`) cannot load pnpm 11 and dies with
-  `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`; a user-level `npm i -g corepack@latest`
-  into `~/.local` shadows it. Switching a checkout between pnpm 10 and 11 also makes
-  pnpm want to purge `node_modules`, which aborts without a TTY — delete the directory
-  and reinstall.
+- **Use corepack 0.34.7 exactly — not `@latest`.** The repo pins `pnpm@11.22.0` in
+  `packageManager`, which `pnpm/setup` reads in CI. Locally that needs a user-level
+  corepack, because Ubuntu's packaged one (0.24.0, at `/usr/share/nodejs/corepack`)
+  cannot load pnpm 11 and dies with `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING`:
+
+  ```bash
+  npm install -g corepack@0.34.7
+  corepack enable --install-directory ~/.local/bin pnpm
+  ```
+
+  It has to be 0.34.7 rather than the newest. corepack 0.35.0 raised its Node floor to
+  `^22.22.2`, and Ubuntu 26.04 ships 22.22.1 from `universe` with no newer candidate —
+  one patch short, with nothing in APT to close it. 0.34.7 accepts `^22.11.0`, runs
+  pnpm 11.22.0, and emits no engine warning. So `npm i -g corepack@latest` silently
+  undoes this; if it happens, the symptom is an `EBADENGINE` warning on every install,
+  not a failure.
+
+  Node itself is fine and does not need replacing. Reach for a user-level version
+  manager (fnm, nvm, mise) only if something genuinely requires a newer Node —
+  NodeSource's APT repo replaces Ubuntu's `nodejs` package and fights its `node-*` debs.
+
+- **Switching a checkout between pnpm 10 and 11** makes pnpm want to purge
+  `node_modules`, which aborts without a TTY. Delete the directory and reinstall.
 - **TypeScript is pinned to 6.0.3 deliberately.** TS 7 (the Go port) typechecks fine but
   `typescript-eslint` will not load against it, which costs the react-hooks rules.
 - **Tests do not catch visual defects.** Every plot and viewer bug found so far was found
