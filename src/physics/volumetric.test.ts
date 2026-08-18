@@ -77,12 +77,24 @@ function slabScenario(hot: number, film: number): Scenario {
     partOverrides: { 'part-0': { bodyType: 'solid', finishId: 'no-radiation' } },
     boundaryConditions: [
       // Order matters: the part-wide zero lands first, then the far face overrides it.
-      { id: 'adiabatic', kind: 'convection', target: { type: 'part', partId: 'part-0' }, h: 0, enabled: true },
-      { id: 'film', kind: 'convection', target: { type: 'face', partId: 'part-0', faceId: 1 }, h: film, enabled: true },
+      {
+        id: 'adiabatic',
+        kind: 'convection',
+        targets: [{ type: 'part', partId: 'part-0' }],
+        h: 0,
+        enabled: true,
+      },
+      {
+        id: 'film',
+        kind: 'convection',
+        targets: [{ type: 'face', partId: 'part-0', faceId: 1 }],
+        h: film,
+        enabled: true,
+      },
       {
         id: 'hot',
         kind: 'fixedTemp',
-        target: { type: 'face', partId: 'part-0', faceId: 0 },
+        targets: [{ type: 'face', partId: 'part-0', faceId: 0 }],
         value: hot,
         enabled: true,
       },
