@@ -197,3 +197,15 @@ export function resolvePart(part: Part, override?: PartOverride): ResolvedPart {
     thickness: Math.max(0, override?.thickness ?? part.thickness),
   };
 }
+
+/**
+ * The conductance a slab of this part would offer through its thickness, W/(m²·K).
+ *
+ * `k / t` — the contact-conductance form of the layer's own resistance, for the joint
+ * that stands in for a part the shell solver cannot put a gradient through. Zero when
+ * the part has no thickness to resist with.
+ */
+export function throughThicknessConductance(part: Part, override?: PartOverride): number {
+  const resolved = resolvePart(part, override);
+  return resolved.thickness > 0 ? resolved.material.k / resolved.thickness : 0;
+}

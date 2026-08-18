@@ -10,6 +10,7 @@ import type { Part } from '../core/types';
 import {
   DEFAULT_FINISH_ID,
   DEFAULT_MATERIAL_ID,
+  throughThicknessConductance,
   findFinish,
   findMaterial,
   getFinish,
@@ -106,5 +107,37 @@ describe('resolvePart', () => {
       UnknownMaterialError,
     );
     expect(() => resolvePart(partWith({ finishId: 'chrome' }))).toThrow(UnknownFinishError);
+  });
+});
+
+describe('throughThicknessConductance', () => {
+  const slab = (thickness: number, materialId: string): Part => ({
+    id: 'slab',
+    name: 'slab',
+    bodyType: 'sheet',
+    materialId,
+    finishId: 'bare-metal',
+    thickness,
+    triRange: [0, 0],
+    nodeRange: [0, 0],
+    volume: 0,
+    surfaceArea: 0,
+    thinnessRatio: 0,
+    bbox: { min: [0, 0, 0], max: [0, 0, 0] },
+  });
+
+  it('is k/t, the resistance of the layer the joint stands in for', () => {
+    // 40 mm of glass wool: 0.04 / 0.04 = 1 W/(m²·K), the figure a hand calculation of
+    // this housing lands on.
+    expect(throughThicknessConductance(slab(0.04, 'glass-wool'))).toBeCloseTo(1, 9);
+    expect(throughThicknessConductance(slab(0.001, 'ss304'))).toBeCloseTo(14900, 6);
+  });
+
+  it('follows the override rather than the imported property', () => {
+    expect(throughThicknessConductance(slab(0.04, 'ss304'), { materialId: 'glass-wool' })).toBeCloseTo(1, 9);
+  });
+
+  it('is zero without a thickness to resist with', () => {
+    expect(throughThicknessConductance(slab(0, 'glass-wool'))).toBe(0);
   });
 });

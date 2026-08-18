@@ -12,9 +12,16 @@
  */
 
 import { useState } from 'react';
-import { PERFECT_CONTACT, type Contact, type Target } from '@/core/types';
+import {
+  PERFECT_CONTACT,
+  type Contact,
+  type Scenario,
+  type Target,
+  type ThermalModel,
+} from '@/core/types';
 import { contactCentroid, createContact, detectContacts } from '@/geometry/contacts';
 import { resolveTargetNodes } from '@/physics/assemble';
+import { resolvePart, throughThicknessConductance } from '@/physics/materials';
 import { Panel } from '../components/Panel';
 import { EmptyState, Hint, NumberField } from '../components/fields';
 import { groupContactsByPartPair, type ContactGroup } from '../state/contactGroups';
@@ -160,6 +167,7 @@ export function ContactsPanel() {
               onToggleExpanded={() => toggleExpanded(group.key)}
               onInspect={() => inspect(group.partA, group.partB)}
               onDelete={remove}
+              layer={resistingLayer(model, scenario.partOverrides, group)}
               centroidOf={(contact) =>
                 model ? formatPointMillimetres(contactCentroid(model, contact)) : ''
               }
@@ -171,8 +179,52 @@ export function ContactsPanel() {
   );
 }
 
+/**
+ * The part across this joint whose own thickness resists most, if either does enough
+ * to be worth offering.
+ *
+ * A joint between two metals is a real contact resistance and nothing here applies. A
+ * joint onto a slab of wool is not: what the user wants in the box is the wool's own
+ * k/t, because the shell solver puts no gradient through a part and the layer's
+ * resistance has nowhere else to live. The smaller k/t is the limiting layer, and the
+ * cut-off keeps the button off metal-to-metal joints, where it would be noise.
+ */
+const RESISTING_LAYER_LIMIT = 1e3;
+
+interface ResistingLayer {
+  partName: string;
+  material: string;
+  thickness: number;
+  conductance: number;
+}
+
+function resistingLayer(
+  model: ThermalModel | null,
+  overrides: Scenario['partOverrides'],
+  group: ContactGroup,
+): ResistingLayer | null {
+  if (!model) return null;
+  let best: ResistingLayer | null = null;
+  for (const partId of [group.partA, group.partB]) {
+    const part = model.parts.find((candidate) => candidate.id === partId);
+    if (!part) continue;
+    const conductance = throughThicknessConductance(part, overrides[partId]);
+    if (!(conductance > 0) || conductance > RESISTING_LAYER_LIMIT) continue;
+    if (best && best.conductance <= conductance) continue;
+    const resolved = resolvePart(part, overrides[partId]);
+    best = {
+      partName: part.name,
+      material: resolved.material.name,
+      thickness: resolved.thickness,
+      conductance,
+    };
+  }
+  return best;
+}
+
 interface JointRowProps {
   group: ContactGroup;
+  layer: ResistingLayer | null;
   label: string;
   expanded: boolean;
   onToggleExpanded(): void;
@@ -183,6 +235,7 @@ interface JointRowProps {
 
 function JointRow({
   group,
+  layer,
   label,
   expanded,
   onToggleExpanded,
@@ -261,6 +314,20 @@ function JointRow({
           >
             perfect
           </button>
+          {layer ? (
+            <button
+              type="button"
+              title={
+                `Carry ${layer.partName}'s own resistance here instead: k / t =` +
+                ` ${layer.material} / ${(layer.thickness * 1000).toFixed(1)} mm =` +
+                ` ${layer.conductance.toPrecision(3)} W/m²·K. The shell solver puts no gradient` +
+                ' through a part, so a layer that insulates has to resist in the joint.'
+              }
+              onClick={() => patchEvery({ conductance: layer.conductance })}
+            >
+              k/t = {layer.conductance.toPrecision(3)}
+            </button>
+          ) : null}
           <span className="muted">
             {points} touch point{points === 1 ? '' : 's'} · {formatArea(group.area)} ·{' '}
             {group.autoDetected ? 'auto' : 'manual'}
