@@ -112,14 +112,14 @@ describe('boundaryConditionGeometry', () => {
   const fixedOnPart: BoundaryCondition = {
     id: 'bc-fixed',
     kind: 'fixedTemp',
-    target: { type: 'part', partId: model.parts[0].id },
+    targets: [{ type: 'part', partId: model.parts[0].id }],
     value: 473,
     enabled: true,
   };
   const loadOnNode: BoundaryCondition = {
     id: 'bc-load',
     kind: 'heatLoad',
-    target: { type: 'node', partId: model.parts[1].id, nodeId: 120 },
+    targets: [{ type: 'node', partId: model.parts[1].id, nodeId: 120 }],
     watts: 5,
     enabled: true,
   };
@@ -148,7 +148,7 @@ describe('boundaryConditionGeometry', () => {
   it('unions several conditions of the same kind', () => {
     const both = boundaryConditionGeometry(
       model,
-      [fixedOnPart, { ...fixedOnPart, id: 'bc-2', target: { type: 'part', partId: 'part-1' } }],
+      [fixedOnPart, { ...fixedOnPart, id: 'bc-2', targets: [{ type: 'part', partId: 'part-1' }] }],
       'fixedTemp',
     );
     expect(both.triangles).toHaveLength(model.triCount);

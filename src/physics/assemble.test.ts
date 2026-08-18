@@ -27,6 +27,8 @@ import {
   resolveTargetTriangles,
   splitNodeCoefficient,
   surfaceCoefficients,
+  unionTargetNodes,
+  unionTargetTriangles,
 } from './assemble';
 
 const AMBIENT = 300;
@@ -56,7 +58,7 @@ function bareConduction(partIds: string[], extra: BoundaryCondition[] = []): Sce
     boundaryConditions.push({
       id: `film-${partId}`,
       kind: 'convection',
-      target: { type: 'part', partId },
+      targets: [{ type: 'part', partId }],
       h: 0,
       enabled: true,
     });
@@ -419,6 +421,161 @@ describe('target resolution', () => {
   });
 });
 
+/** One part carrying three faces; face 0 has twice the area of faces 1 and 2. */
+function threeFaceModel(): ThermalModel {
+  return modelFromMesh(
+    mergeMeshes(
+      stripMesh(0.1, 0.05, 2, 1, 0, 0),
+      stripMesh(0.05, 0.05, 2, 1, 0, 1, [0.2, 0, 0]),
+      stripMesh(0.05, 0.05, 2, 1, 0, 2, [0.4, 0, 0]),
+    ),
+  );
+}
+
+function faceNodes(model: ThermalModel, faceId: number): Uint32Array {
+  return resolveTargetNodes(model, { type: 'face', partId: 'part-0', faceId });
+}
+
+describe('grouped target resolution', () => {
+  const model = threeFaceModel();
+
+  it('names a node once when a member is contained in an earlier one', () => {
+    const nodes = unionTargetNodes(model, [
+      { type: 'part', partId: 'part-0' },
+      { type: 'face', partId: 'part-0', faceId: 1 },
+    ]);
+    expect(nodes.length).toBe(model.nodeCount);
+    expect(new Set(nodes).size).toBe(model.nodeCount);
+  });
+
+  it('keeps the members in order, each member in its own resolver’s order', () => {
+    const nodes = unionTargetNodes(model, [
+      { type: 'face', partId: 'part-0', faceId: 1 },
+      { type: 'part', partId: 'part-0' },
+    ]);
+    expect(Array.from(nodes.slice(0, faceNodes(model, 1).length))).toEqual(
+      Array.from(faceNodes(model, 1)),
+    );
+    expect(new Set(nodes).size).toBe(model.nodeCount);
+  });
+
+  it('unions triangles the same way', () => {
+    const tris = unionTargetTriangles(model, [
+      { type: 'face', partId: 'part-0', faceId: 0 },
+      { type: 'part', partId: 'part-0' },
+    ]);
+    expect(tris.length).toBe(model.triCount);
+    expect(new Set(tris).size).toBe(model.triCount);
+  });
+});
+
+describe('grouped boundary conditions', () => {
+  function assembleWith(condition: BoundaryCondition) {
+    const model = threeFaceModel();
+    const scenario = scenarioWith({ boundaryConditions: [condition] });
+    const dofs = buildDofMap(model, scenario);
+    const system = assembleSystem(
+      model,
+      scenario,
+      dofs,
+      surfaceCoefficients(model, scenario, ambientField(model)),
+    );
+    return { model, dofs, system };
+  }
+
+  it('spreads one heat load over the whole group by area, summing to the typed watts', () => {
+    const { model, dofs, system } = assembleWith({
+      id: 'load',
+      kind: 'heatLoad',
+      targets: [
+        { type: 'face', partId: 'part-0', faceId: 0 },
+        { type: 'face', partId: 'part-0', faceId: 1 },
+      ],
+      watts: 6,
+      enabled: true,
+    });
+
+    const wattsOn = (faceId: number) => {
+      let watts = 0;
+      for (const node of faceNodes(model, faceId)) watts += system.loadPerDof[dofs.nodeDof[node]];
+      return watts;
+    };
+
+    let total = 0;
+    for (let dof = 0; dof < dofs.dofCount; dof++) total += system.loadPerDof[dof];
+    expect(total).toBeCloseTo(6, 9);
+    // Face 0 is twice the area of face 1, so it takes twice the watts.
+    expect(wattsOn(0)).toBeGreaterThan(wattsOn(1));
+    expect(wattsOn(0)).toBeCloseTo(4, 6);
+    expect(wattsOn(1)).toBeCloseTo(2, 6);
+    expect(wattsOn(2)).toBe(0);
+  });
+
+  it('injects the typed watts once when a member is covered by another', () => {
+    const { dofs, system } = assembleWith({
+      id: 'load',
+      kind: 'heatLoad',
+      targets: [
+        { type: 'part', partId: 'part-0' },
+        { type: 'face', partId: 'part-0', faceId: 0 },
+      ],
+      watts: 6,
+      enabled: true,
+    });
+
+    let total = 0;
+    for (let dof = 0; dof < dofs.dofCount; dof++) total += system.loadPerDof[dof];
+    expect(total).toBeCloseTo(6, 9);
+  });
+
+  it('pins every member of a grouped fixed temperature and nothing else', () => {
+    const { model, dofs, system } = assembleWith({
+      id: 'hot',
+      kind: 'fixedTemp',
+      targets: [
+        { type: 'face', partId: 'part-0', faceId: 0 },
+        { type: 'face', partId: 'part-0', faceId: 2 },
+      ],
+      value: 473,
+      enabled: true,
+    });
+
+    for (const faceId of [0, 2]) {
+      for (const node of faceNodes(model, faceId)) {
+        const dof = dofs.nodeDof[node];
+        expect(system.fixed[dof]).toBe(1);
+        expect(system.fixedValue[dof]).toBe(473);
+      }
+    }
+    for (const node of faceNodes(model, 1)) expect(system.fixed[dofs.nodeDof[node]]).toBe(0);
+  });
+
+  it('applies a grouped film coefficient to every member’s triangles', () => {
+    const model = threeFaceModel();
+    const overrides = convectionOverrides(
+      model,
+      scenarioWith({
+        boundaryConditions: [
+          {
+            id: 'film',
+            kind: 'convection',
+            targets: [
+              { type: 'face', partId: 'part-0', faceId: 0 },
+              { type: 'face', partId: 'part-0', faceId: 2 },
+            ],
+            h: 7,
+            enabled: true,
+          },
+        ],
+      }),
+    );
+    for (let t = 0; t < model.triCount; t++) {
+      if (model.triFace[t] === 1) expect(Number.isNaN(overrides[t])).toBe(true);
+      else expect(overrides[t]).toBe(7);
+    }
+  });
+});
+
 describe('surface coefficients', () => {
   it('marks untargeted triangles NaN so the correlation still runs there', () => {
     const model = twoStripModel(0.1, 0.02, 2);
@@ -427,14 +584,14 @@ describe('surface coefficients', () => {
         {
           id: 'film',
           kind: 'convection',
-          target: { type: 'part', partId: 'part-0' },
+          targets: [{ type: 'part', partId: 'part-0' }],
           h: 7,
           enabled: true,
         },
         {
           id: 'auto',
           kind: 'convection',
-          target: { type: 'part', partId: 'part-1' },
+          targets: [{ type: 'part', partId: 'part-1' }],
           h: 'auto',
           enabled: true,
         },
@@ -461,7 +618,7 @@ describe('surface coefficients', () => {
         {
           id: 'film',
           kind: 'convection',
-          target: { type: 'part', partId: 'part-0' },
+          targets: [{ type: 'part', partId: 'part-0' }],
           h: 7,
           enabled: false,
         },
@@ -629,7 +786,7 @@ describe('cavity coupling', () => {
         {
           id: 'film',
           kind: 'convection',
-          target: { type: 'part', partId: 'part-0' },
+          targets: [{ type: 'part', partId: 'part-0' }],
           h: film,
           enabled: true,
         },
@@ -773,7 +930,7 @@ describe('assembleSystem', () => {
         {
           id: 'film',
           kind: 'convection',
-          target: { type: 'part', partId: 'part-0' },
+          targets: [{ type: 'part', partId: 'part-0' }],
           h: 8,
           enabled: true,
         },
@@ -844,7 +1001,7 @@ describe('assembleSystem', () => {
         {
           id: 'load',
           kind: 'heatLoad',
-          target: { type: 'part', partId: 'part-0' },
+          targets: [{ type: 'part', partId: 'part-0' }],
           watts: 6,
           enabled: true,
         },
@@ -879,7 +1036,7 @@ describe('assembleSystem', () => {
         {
           id: 'load',
           kind: 'heatLoad',
-          target: { type: 'part', partId: 'part-0' },
+          targets: [{ type: 'part', partId: 'part-0' }],
           watts: 6,
           enabled: true,
         },
@@ -903,14 +1060,14 @@ describe('assembleSystem', () => {
         {
           id: 'hot',
           kind: 'fixedTemp',
-          target: { type: 'node', partId: 'part-0', nodeId: 0 },
+          targets: [{ type: 'node', partId: 'part-0', nodeId: 0 }],
           value: 400,
           enabled: true,
         },
         {
           id: 'hotter',
           kind: 'fixedTemp',
-          target: { type: 'node', partId: 'part-0', nodeId: 0 },
+          targets: [{ type: 'node', partId: 'part-0', nodeId: 0 }],
           value: 500,
           enabled: true,
         },
@@ -954,7 +1111,7 @@ describe('applyFixedTemperatures', () => {
         {
           id: 'hot',
           kind: 'fixedTemp',
-          target: { type: 'node', partId: 'part-0', nodeId: 0 },
+          targets: [{ type: 'node', partId: 'part-0', nodeId: 0 }],
           value: 400,
           enabled: true,
         },

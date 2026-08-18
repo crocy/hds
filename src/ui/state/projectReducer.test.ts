@@ -66,11 +66,14 @@ describe('projectReducer', () => {
 
   it('re-centres the section and clears the selection when a new model is loaded', () => {
     const start = projectReducer(
-      projectReducer(createInitialState(), {
-        type: 'view/patchSection',
-        patch: { offset: 0.05 },
-      }),
-      { type: 'view/setSelection', selection: [{ type: 'part', partId: 'left-0' }] },
+      projectReducer(
+        projectReducer(createInitialState(), {
+          type: 'view/patchSection',
+          patch: { offset: 0.05 },
+        }),
+        { type: 'view/setSelection', selection: [{ type: 'part', partId: 'left-0' }] },
+      ),
+      { type: 'view/setBcDraft', targets: [{ type: 'part', partId: 'left-0' }] },
     );
 
     const loaded = projectReducer(start, {
@@ -83,6 +86,8 @@ describe('projectReducer', () => {
 
     expect(loaded.viewer.section.offset).toBeNull();
     expect(loaded.viewer.selection).toEqual([]);
+    // The staged group names the old geometry's parts, like the selection does.
+    expect(loaded.viewer.bcDraft).toEqual([]);
     expect(loaded.modelRevision).toBe(start.modelRevision + 1);
   });
 
@@ -102,6 +107,36 @@ describe('projectReducer', () => {
 
     expect(loaded.scenario.ambient).toBe(313.15);
     expect(loaded.scenario.partOverrides).toEqual({});
+  });
+
+  it('stages a boundary-condition draft without disturbing the selection', () => {
+    const selected = projectReducer(createInitialState(), {
+      type: 'view/setSelection',
+      selection: [{ type: 'part', partId: 'left-0' }],
+    });
+    const staged = projectReducer(selected, {
+      type: 'view/setBcDraft',
+      targets: [{ type: 'face', partId: 'left-0', faceId: 2 }],
+    });
+
+    expect(staged.viewer.bcDraft).toHaveLength(1);
+    expect(staged.viewer.selection).toBe(selected.viewer.selection);
+    expect(
+      projectReducer(staged, {
+        type: 'view/setBcDraft',
+        targets: [{ type: 'face', partId: 'left-0', faceId: 2 }],
+      }),
+    ).toBe(staged);
+  });
+
+  it('arms and disarms collecting, and ignores a repeat of either', () => {
+    const start = createInitialState();
+    expect(start.viewer.bcCollecting).toBe(false);
+    expect(projectReducer(start, { type: 'view/setBcCollecting', collecting: false })).toBe(start);
+
+    const armed = projectReducer(start, { type: 'view/setBcCollecting', collecting: true });
+    expect(armed.viewer.bcCollecting).toBe(true);
+    expect(projectReducer(armed, { type: 'view/setBcCollecting', collecting: true })).toBe(armed);
   });
 
   it('drops a duplicate selection rather than re-rendering the viewer for it', () => {

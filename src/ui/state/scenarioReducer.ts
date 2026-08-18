@@ -22,8 +22,10 @@ import type {
   PartOverride,
   Scenario,
   SolverSettings,
+  Target,
   Vec3,
 } from '@/core/types';
+import { dedupeTargets, sameTargets } from '@/core/targets';
 
 /** Fields of a boundary condition that can be edited without changing its kind. */
 export interface BoundaryConditionPatch {
@@ -53,8 +55,11 @@ export type ScenarioAction =
   | { type: 'parts/clearOverride'; partIds: readonly string[] }
   | { type: 'parts/isolate'; partIds: readonly string[]; allPartIds: readonly string[] }
   | { type: 'parts/showAll'; allPartIds: readonly string[] }
+  /** Deduplicates the member set; a condition naming nothing is ignored, not added. */
   | { type: 'bc/add'; condition: BoundaryCondition }
   | { type: 'bc/patch'; id: string; patch: BoundaryConditionPatch }
+  /** Replaces the whole member set; an empty one is refused, not written. */
+  | { type: 'bc/setTargets'; id: string; targets: readonly Target[] }
   | { type: 'bc/remove'; id: string }
   | { type: 'contacts/replace'; contacts: Contact[] }
   | { type: 'contacts/add'; contact: Contact }
@@ -134,8 +139,15 @@ export function scenarioReducer(state: Scenario, action: ScenarioAction): Scenar
       return { ...state, partOverrides };
     }
 
-    case 'bc/add':
-      return { ...state, boundaryConditions: [...state.boundaryConditions, action.condition] };
+    case 'bc/add': {
+      const targets = dedupeTargets(action.condition.targets);
+      // Same invariant as `bc/setTargets`: a condition that names nothing is meaningless.
+      if (targets.length === 0) return state;
+      return {
+        ...state,
+        boundaryConditions: [...state.boundaryConditions, { ...action.condition, targets }],
+      };
+    }
 
     case 'bc/patch': {
       let changed = false;
@@ -144,6 +156,20 @@ export function scenarioReducer(state: Scenario, action: ScenarioAction): Scenar
         const patched = patchBoundaryCondition(condition, action.patch);
         if (patched !== condition) changed = true;
         return patched;
+      });
+      return changed ? { ...state, boundaryConditions } : state;
+    }
+
+    case 'bc/setTargets': {
+      const targets = dedupeTargets(action.targets);
+      // The row's own delete button is how a condition goes away; emptying its member
+      // set would leave one that names nothing.
+      if (targets.length === 0) return state;
+      let changed = false;
+      const boundaryConditions = state.boundaryConditions.map((condition) => {
+        if (condition.id !== action.id || sameTargets(condition.targets, targets)) return condition;
+        changed = true;
+        return { ...condition, targets };
       });
       return changed ? { ...state, boundaryConditions } : state;
     }

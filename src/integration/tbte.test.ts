@@ -41,7 +41,7 @@ import { computeTriangleEmissivity, STEFAN_BOLTZMANN } from '../physics/radiatio
 import { analysePathLength } from '../analysis/pathLength';
 import { createDefaultScenario } from '../core/defaults';
 import { celsiusToKelvin, kelvinToCelsius } from '../core/units';
-import type { Scenario, ThermalModel } from '../core/types';
+import type { BoundaryCondition, Scenario, Target, ThermalModel } from '../core/types';
 
 const require = createRequire(import.meta.url);
 const WASM_PATH = require.resolve('occt-import-js/dist/occt-import-js.wasm');
@@ -175,7 +175,7 @@ describe('TBTE housing', () => {
       {
         id: 'block-200c',
         kind: 'fixedTemp',
-        target: { type: 'part', partId: block!.id },
+        targets: [{ type: 'part', partId: block!.id }],
         value: celsiusToKelvin(200),
         enabled: true,
       },
@@ -311,5 +311,73 @@ describe('TBTE housing', () => {
     // floor the fin benchmarks sit at. Measured 2.2e-6 of the loss.
     expect(Math.abs(result.balance.residual) / loss).toBeLessThan(5e-5);
     expect(result.warnings.join('\n')).not.toContain('Energy balance');
+  }, 120_000);
+
+  /**
+   * Grouping several targets under one condition is an authoring convenience, not a
+   * change to the physics. Both halves of that claim are checked on real geometry:
+   * a group pins exactly what the separate conditions it replaces would pin, and its
+   * watts are the total over the whole group however its members overlap.
+   */
+  it('treats a group as authoring convenience rather than a change to the answer', async () => {
+    const model = await loadTbte();
+    const sheet = model.parts.find((p) => p.name === 'glava');
+    expect(sheet).toBeDefined();
+
+    const [triStart, triEnd] = sheet!.triRange;
+    const faceIds = [
+      ...new Set(Array.from({ length: triEnd - triStart }, (_, i) => model.triFace[triStart + i])),
+    ].slice(0, 2);
+    expect(faceIds).toHaveLength(2);
+    const faces: Target[] = faceIds.map((faceId) => ({ type: 'face', partId: sheet!.id, faceId }));
+
+    const grouped = createDefaultScenario(20);
+    grouped.boundaryConditions = [
+      {
+        id: 'grouped',
+        kind: 'fixedTemp',
+        targets: faces,
+        value: celsiusToKelvin(200),
+        enabled: true,
+      },
+    ];
+
+    const separate = createDefaultScenario(20);
+    separate.boundaryConditions = faces.map((face, index): BoundaryCondition => ({
+      id: `separate-${index}`,
+      kind: 'fixedTemp',
+      targets: [face],
+      value: celsiusToKelvin(200),
+      enabled: true,
+    }));
+
+    const groupedResult = solveShell(model, grouped);
+    const separateResult = solveShell(model, separate);
+    let maxDifference = 0;
+    for (let node = 0; node < model.nodeCount; node++) {
+      maxDifference = Math.max(
+        maxDifference,
+        Math.abs(groupedResult.temperature[node] - separateResult.temperature[node]),
+      );
+    }
+    expect(maxDifference).toBe(0);
+    expect(groupedResult.balance.injectedAtFixed).toBeCloseTo(
+      separateResult.balance.injectedAtFixed,
+      9,
+    );
+
+    // The face lies inside the part, so the union is just the part's nodes and the 5 W
+    // lands once. Two separately authored 5 W conditions over the same nodes inject 10 W.
+    const overlapping = createDefaultScenario(20);
+    overlapping.boundaryConditions = [
+      {
+        id: 'overlapping',
+        kind: 'heatLoad',
+        targets: [{ type: 'part', partId: sheet!.id }, faces[0]],
+        watts: 5,
+        enabled: true,
+      },
+    ];
+    expect(solveShell(model, overlapping).balance.injectedAtLoads).toBeCloseTo(5, 9);
   }, 120_000);
 });

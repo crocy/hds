@@ -1,23 +1,26 @@
 /**
  * Boundary conditions, and the selection mode they are created from.
  *
- * Each row shows how many nodes its target actually resolves to, computed with the
- * solver's own `resolveTargetNodes` — a condition on a face that no longer exists
- * reads "0 nodes" here rather than quietly doing nothing during the solve.
+ * A condition applies to a set of targets, so `collect` arms the viewer to stage
+ * clicks into a draft group and one press of `+ fixed temp` turns the whole draft
+ * into one row. With nothing staged the buttons fall back to the global selection,
+ * which keeps the old flow — pick a part in the tree, press the button — working,
+ * now as a single grouped row rather than one row per target.
  */
 
 import type { BoundaryCondition, Target } from '@/core/types';
-import { celsiusToKelvin, kelvinToCelsius } from '@/core/units';
-import { resolveTargetNodes } from '@/physics/assemble';
+import { celsiusToKelvin } from '@/core/units';
+import { targetKey, targetsEqual } from '@/core/targets';
 import { describeTarget, SELECTION_MODES, type SelectionMode } from '@/viewer';
 import { Panel } from '../components/Panel';
-import { ButtonGroup, EmptyState, Hint, NumberField } from '../components/fields';
+import { ButtonGroup, EmptyState, Hint } from '../components/fields';
 import {
   createConvectionCondition,
   createFixedTempCondition,
   createHeatLoadCondition,
 } from '../state/entityFactories';
 import { useDispatch, useProject } from '../state/projectStore';
+import { BoundaryConditionRow } from './BoundaryConditionRow';
 
 const MODE_LABELS: Record<SelectionMode, string> = {
   part: 'part',
@@ -33,10 +36,17 @@ const DEFAULT_HEAT_LOAD_W = 5;
 export function BoundaryConditionsPanel() {
   const { model, scenario, viewer } = useProject();
   const dispatch = useDispatch();
+  const draft = viewer.bcDraft;
   const selection = viewer.selection;
+  const source = draft.length > 0 ? draft : selection;
 
-  const addFromSelection = (make: (target: Target) => BoundaryCondition) => {
-    for (const target of selection) dispatch({ type: 'bc/add', condition: make(target) });
+  const setDraft = (targets: Target[]) => dispatch({ type: 'view/setBcDraft', targets });
+
+  const addOneCondition = (make: (targets: readonly Target[]) => BoundaryCondition) => {
+    if (source.length === 0) return;
+    dispatch({ type: 'bc/add', condition: make(source) });
+    // Collect stays armed, so the next group can be built straight away.
+    setDraft([]);
   };
 
   return (
@@ -54,13 +64,54 @@ export function BoundaryConditionsPanel() {
         />
       </div>
 
+      <div className="row spread">
+        <button
+          type="button"
+          className={viewer.bcCollecting ? 'on' : undefined}
+          title="Route viewer clicks into a group instead of moving the selection"
+          onClick={() =>
+            dispatch({ type: 'view/setBcCollecting', collecting: !viewer.bcCollecting })
+          }
+        >
+          collect{draft.length > 0 ? ` (${draft.length})` : ''}
+        </button>
+        {draft.length > 0 ? (
+          <button
+            type="button"
+            className="mini"
+            title="drop every staged target"
+            onClick={() => setDraft([])}
+          >
+            clear
+          </button>
+        ) : null}
+      </div>
+
+      {draft.length > 0 ? (
+        <ul className="staged-list">
+          {draft.map((target) => (
+            <li key={targetKey(target)} className="staged-target">
+              <span>{model ? describeTarget(model, target) : target.partId}</span>
+              <button
+                type="button"
+                className="mini"
+                title="drop from the group"
+                onClick={() => setDraft(draft.filter((staged) => !targetsEqual(staged, target)))}
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       <div className="row">
         <button
           type="button"
-          disabled={selection.length === 0}
+          disabled={source.length === 0}
           onClick={() =>
-            addFromSelection((target) =>
-              createFixedTempCondition(target, celsiusToKelvin(DEFAULT_FIXED_TEMP_C)),
+            addOneCondition((targets) =>
+              createFixedTempCondition(targets, celsiusToKelvin(DEFAULT_FIXED_TEMP_C)),
             )
           }
         >
@@ -68,129 +119,50 @@ export function BoundaryConditionsPanel() {
         </button>
         <button
           type="button"
-          disabled={selection.length === 0}
+          disabled={source.length === 0}
           onClick={() =>
-            addFromSelection((target) => createHeatLoadCondition(target, DEFAULT_HEAT_LOAD_W))
+            addOneCondition((targets) => createHeatLoadCondition(targets, DEFAULT_HEAT_LOAD_W))
           }
         >
           + heat load
         </button>
         <button
           type="button"
-          disabled={selection.length === 0}
-          onClick={() => addFromSelection((target) => createConvectionCondition(target, 'auto'))}
+          disabled={source.length === 0}
+          onClick={() => addOneCondition((targets) => createConvectionCondition(targets, 'auto'))}
         >
           + convection
         </button>
       </div>
-      <Hint>
-        {selection.length === 0
-          ? 'Nothing selected — click the model, or a part in the tree.'
-          : `${selection.length} target${selection.length === 1 ? '' : 's'} selected.`}
-      </Hint>
+      <Hint>{sourceHint(draft.length, selection.length, viewer.bcCollecting)}</Hint>
 
       {scenario.boundaryConditions.length === 0 ? (
         <EmptyState>No boundary conditions. A model with none solves to ambient.</EmptyState>
       ) : (
-        <ul className="entity-list">
-          {scenario.boundaryConditions.map((condition) => {
-            const nodes = model ? resolveTargetNodes(model, condition.target).length : 0;
-            return (
-              <li key={condition.id} className={nodes === 0 ? 'entity broken' : 'entity'}>
-                <div className="entity-head">
-                  <input
-                    type="checkbox"
-                    checked={condition.enabled}
-                    title="enabled"
-                    onChange={(event) =>
-                      dispatch({
-                        type: 'bc/patch',
-                        id: condition.id,
-                        patch: { enabled: event.target.checked },
-                      })
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="entity-name"
-                    title="select this target"
-                    onClick={() =>
-                      dispatch({ type: 'view/setSelection', selection: [condition.target] })
-                    }
-                  >
-                    {model ? describeTarget(model, condition.target) : condition.target.partId}
-                  </button>
-                  <button
-                    type="button"
-                    className="mini"
-                    title="delete"
-                    onClick={() => dispatch({ type: 'bc/remove', id: condition.id })}
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div className="entity-body">
-                  {condition.kind === 'fixedTemp' ? (
-                    <NumberField
-                      label="temperature"
-                      suffix="°C"
-                      value={kelvinToCelsius(condition.value)}
-                      onCommit={(celsius) =>
-                        dispatch({
-                          type: 'bc/patch',
-                          id: condition.id,
-                          patch: { value: celsiusToKelvin(celsius) },
-                        })
-                      }
-                    />
-                  ) : null}
-                  {condition.kind === 'heatLoad' ? (
-                    <NumberField
-                      label="power"
-                      suffix="W"
-                      value={condition.watts}
-                      onCommit={(watts) =>
-                        dispatch({ type: 'bc/patch', id: condition.id, patch: { watts } })
-                      }
-                      title="Total watts spread over the target"
-                    />
-                  ) : null}
-                  {condition.kind === 'convection' ? (
-                    <div className="row">
-                      <NumberField
-                        label="h"
-                        suffix="W/m²·K"
-                        value={condition.h === 'auto' ? 0 : condition.h}
-                        disabled={condition.h === 'auto'}
-                        onCommit={(h) =>
-                          dispatch({ type: 'bc/patch', id: condition.id, patch: { h } })
-                        }
-                      />
-                      <button
-                        type="button"
-                        className={condition.h === 'auto' ? 'on' : undefined}
-                        onClick={() =>
-                          dispatch({
-                            type: 'bc/patch',
-                            id: condition.id,
-                            patch: { h: condition.h === 'auto' ? 10 : 'auto' },
-                          })
-                        }
-                        title="Use the natural-convection correlation instead of a fixed film coefficient"
-                      >
-                        auto
-                      </button>
-                    </div>
-                  ) : null}
-                  <span className="muted">
-                    {condition.kind} · {nodes} node{nodes === 1 ? '' : 's'}
-                  </span>
-                </div>
-              </li>
-            );
-          })}
+        <ul className="entity-list expandable">
+          {scenario.boundaryConditions.map((condition) => (
+            <BoundaryConditionRow
+              key={condition.id}
+              condition={condition}
+              model={model}
+              scenario={scenario}
+              draft={draft}
+            />
+          ))}
         </ul>
       )}
     </Panel>
   );
+}
+
+/** What the next `+` press would build, and how to change it. */
+function sourceHint(staged: number, selected: number, collecting: boolean): string {
+  if (staged > 0) {
+    return `${staged} staged — one condition over all of them. Clicking a staged target again drops it.`;
+  }
+  if (collecting) {
+    return 'Collecting: viewer clicks stage a target into the group instead of selecting it, and clicking a staged one again drops it.';
+  }
+  if (selected === 0) return 'Nothing selected — click the model, or a part in the tree.';
+  return `${selected} target${selected === 1 ? '' : 's'} selected — one condition over all of them.`;
 }

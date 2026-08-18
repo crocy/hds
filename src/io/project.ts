@@ -12,6 +12,7 @@
  */
 
 import type {
+  BoundaryCondition,
   Bounds,
   Contact,
   EdgeChain,
@@ -28,8 +29,11 @@ import { DEFAULT_VIEWER_STATE, type ViewerState } from '@/ui/state/viewerState';
 import { decodeAs, encodeBinaryArray, type BinaryArray } from './binary';
 
 export const PROJECT_FORMAT = 'hds.project';
-export const PROJECT_VERSION = 1;
+export const PROJECT_VERSION = 2;
 export const PROJECT_EXTENSION = '.hds.json';
+
+/** Versions this build understands. Version 1 named one target per boundary condition. */
+const READABLE_VERSIONS: readonly number[] = [1, PROJECT_VERSION];
 
 export class ProjectFormatError extends Error {
   constructor(message: string) {
@@ -134,7 +138,8 @@ export function createProjectFile(snapshot: ProjectSnapshot): ProjectFile {
     savedAt: new Date().toISOString(),
     source: snapshot.source,
     scenario: serialiseScenario(snapshot.scenario),
-    viewer: snapshot.viewer,
+    // A group someone was midway through clicking is not committed state — §6.
+    viewer: { ...snapshot.viewer, bcDraft: [], bcCollecting: false },
     customMaterials: snapshot.customMaterials,
     customFinishes: snapshot.customFinishes,
     mesh: snapshot.embedMesh && snapshot.model ? serialiseModel(snapshot.model) : null,
@@ -199,9 +204,9 @@ export function parseProjectFile(text: string): ProjectFile {
       )}`,
     );
   }
-  if (file.version !== PROJECT_VERSION) {
+  if (typeof file.version !== 'number' || !READABLE_VERSIONS.includes(file.version)) {
     throw new ProjectFormatError(
-      `Project format version ${String(file.version)} cannot be read by this build, which writes version ${PROJECT_VERSION}`,
+      `Project format version ${String(file.version)} cannot be read by this build, which reads versions ${READABLE_VERSIONS.join(' and ')} and writes version ${PROJECT_VERSION}`,
     );
   }
   if (!file.scenario || typeof file.scenario !== 'object') {
@@ -229,10 +234,12 @@ export function openProject(file: ProjectFile, importedModel: ThermalModel | nul
     }
   }
   const geometry = model ?? importedModel;
-  const scenario = deserialiseScenario(file.scenario);
+  // Upgraded before resolution, so an old file's dead target reports the usual issue.
+  const upgraded = upgradeScenarioFromVersion(deserialiseScenario(file.scenario), file.version);
+  issues.push(...upgraded.issues);
   const resolved = geometry
-    ? resolveScenarioAgainstModel(scenario, geometry)
-    : { scenario, issues: [] as ProjectIssue[] };
+    ? resolveScenarioAgainstModel(upgraded.scenario, geometry)
+    : { scenario: upgraded.scenario, issues: [] as ProjectIssue[] };
   issues.push(...resolved.issues);
 
   if (!geometry) {
@@ -309,6 +316,59 @@ function expectLength(field: string, actual: number, expected: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Upgrading older files
+// ---------------------------------------------------------------------------
+
+/**
+ * Brings a scenario written by an older build up to the current shape — spec §6.
+ *
+ * Version 1 gave each boundary condition one `target`; version 2 gives it a set.
+ * A condition that names no readable target is dropped rather than upgraded into an
+ * empty set, because `targets` is non-empty by contract.
+ */
+function upgradeScenarioFromVersion(
+  scenario: Scenario,
+  fromVersion: number,
+): { scenario: Scenario; issues: ProjectIssue[] } {
+  if (fromVersion !== 1) return { scenario, issues: [] };
+
+  const issues: ProjectIssue[] = [];
+  const boundaryConditions: BoundaryCondition[] = [];
+  scenario.boundaryConditions.forEach((condition, index) => {
+    const { target, ...rest } = condition as unknown as Record<string, unknown>;
+    if (!isTarget(target)) {
+      issues.push({
+        kind: 'boundaryCondition',
+        id: typeof rest.id === 'string' ? rest.id : `boundaryConditions[${index}]`,
+        detail: `A version 1 ${typeof rest.kind === 'string' ? rest.kind : 'boundary'} condition names no readable target; it was dropped`,
+      });
+      return;
+    }
+    boundaryConditions.push({ ...rest, targets: [target] } as unknown as BoundaryCondition);
+  });
+
+  return { scenario: { ...scenario, boundaryConditions }, issues };
+}
+
+function isTarget(value: unknown): value is Target {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.partId !== 'string') return false;
+  switch (candidate.type) {
+    case 'part':
+      return true;
+    case 'face':
+      return typeof candidate.faceId === 'number';
+    case 'edge':
+      return typeof candidate.edgeId === 'number';
+    case 'node':
+      return typeof candidate.nodeId === 'number';
+    default:
+      return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Re-resolution
 // ---------------------------------------------------------------------------
 
@@ -340,16 +400,34 @@ export function resolveScenarioAgainstModel(
     });
   }
 
-  const boundaryConditions = scenario.boundaryConditions.filter((condition) => {
-    const problem = describeUnresolvableTarget(model, partIds, condition.target);
-    if (!problem) return true;
+  // A group survives on whichever members still resolve; only one that loses every
+  // member goes, which is what a single-target condition did before grouping.
+  const boundaryConditions: BoundaryCondition[] = [];
+  let shrankCondition = false;
+  for (const condition of scenario.boundaryConditions) {
+    const kept: Target[] = [];
+    const lost: string[] = [];
+    for (const target of condition.targets) {
+      const problem = describeUnresolvableTarget(model, partIds, target);
+      if (!problem) kept.push(target);
+      else lost.push(`${describeTargetBriefly(target)}: ${problem}`);
+    }
+    if (lost.length === 0) {
+      boundaryConditions.push(condition);
+      continue;
+    }
     issues.push({
       kind: 'boundaryCondition',
       id: condition.id,
-      detail: `${condition.kind} on ${describeTargetBriefly(condition.target)}: ${problem}`,
+      detail:
+        kept.length === 0
+          ? `${condition.kind} on ${lost.join('; ')}; the condition was dropped`
+          : `${condition.kind} lost ${lost.join('; ')}; it was kept on its ${kept.length} remaining target${kept.length === 1 ? '' : 's'}`,
     });
-    return false;
-  });
+    if (kept.length === 0) continue;
+    boundaryConditions.push({ ...condition, targets: kept });
+    shrankCondition = true;
+  }
 
   const contacts = scenario.contacts.filter((contact) => {
     const problem = describeUnresolvableContact(model, partIds, contact);
@@ -375,6 +453,7 @@ export function resolveScenarioAgainstModel(
 
   const changed =
     droppedOverride ||
+    shrankCondition ||
     boundaryConditions.length !== scenario.boundaryConditions.length ||
     contacts.length !== scenario.contacts.length ||
     cavities.length !== scenario.cavities.length;

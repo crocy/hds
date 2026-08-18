@@ -543,7 +543,8 @@ input[type='checkbox'] {
   gap: 4px;
 }
 
-/* Rows that open in place need room to open into, or every joint is read through a slot. */
+/* Rows carrying a sublist — a joint's touch points, a condition's members — need room
+   for it, or the list is read through a slot. */
 .entity-list.expandable {
   max-height: 420px;
 }
@@ -565,9 +566,33 @@ input[type='checkbox'] {
   gap: 3px;
 }
 
-.point-name {
+.point-name,
+.member-name {
   flex: 1;
   font-size: 11px;
+}
+
+/* Boundary conditions: the group being staged, before it is turned into a condition.
+   Amber to match the draft highlight in the viewer, which the blue selection is not. */
+.staged-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.staged-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--warning);
+  border-radius: 10px;
+  padding: 1px 3px 1px 8px;
+  font-size: 10.5px;
 }
 
 .expander {

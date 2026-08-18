@@ -133,19 +133,31 @@ export type Target =
   | { type: 'edge'; partId: string; edgeId: number }
   | { type: 'node'; partId: string; nodeId: number };
 
+/**
+ * One condition over a *set* of targets: six faces of a housing at 200 °C are one
+ * row carrying one value, not six. `targets` is non-empty — a condition naming
+ * nothing is meaningless — and deduplicated by `targetKey`, so the union of nodes
+ * a member claims is counted once. Every write path enforces both.
+ */
 export type BoundaryCondition =
-  | { id: string; kind: 'fixedTemp'; target: Target; /** kelvin */ value: number; enabled: boolean }
+  | {
+      id: string;
+      kind: 'fixedTemp';
+      targets: Target[];
+      /** kelvin */ value: number;
+      enabled: boolean;
+    }
   | {
       id: string;
       kind: 'heatLoad';
-      target: Target;
-      /** watts, total over the target */ watts: number;
+      targets: Target[];
+      /** watts, total over the whole group */ watts: number;
       enabled: boolean;
     }
   | {
       id: string;
       kind: 'convection';
-      target: Target;
+      targets: Target[];
       /** W/(m²·K), or 'auto' for the correlation */ h: number | 'auto';
       enabled: boolean;
     };

@@ -29,6 +29,10 @@ export interface ViewerState {
   overlays: Record<OverlayKind, boolean>;
   selectionMode: SelectionMode;
   selection: Target[];
+  /** The group being staged in the boundary-conditions panel, not yet a condition. */
+  bcDraft: Target[];
+  /** Whether viewer clicks add to `bcDraft` instead of moving the selection. */
+  bcCollecting: boolean;
   section: SectionState;
 }
 
@@ -54,5 +58,7 @@ export const DEFAULT_VIEWER_STATE: ViewerState = {
   },
   selectionMode: 'part',
   selection: [],
+  bcDraft: [],
+  bcCollecting: false,
   section: DEFAULT_SECTION_STATE,
 };

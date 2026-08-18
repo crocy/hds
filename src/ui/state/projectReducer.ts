@@ -85,6 +85,8 @@ export type ProjectAction =
   | { type: 'view/setOverlay'; kind: OverlayKind; visible: boolean }
   | { type: 'view/setSelectionMode'; mode: SelectionMode }
   | { type: 'view/setSelection'; selection: Target[] }
+  | { type: 'view/setBcDraft'; targets: Target[] }
+  | { type: 'view/setBcCollecting'; collecting: boolean }
   | { type: 'view/patchSection'; patch: Partial<SectionState> }
   | { type: 'view/setCamera'; camera: CameraView }
   | { type: 'library/set'; custom: CustomLibrary };
@@ -169,6 +171,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         viewer: {
           ...state.viewer,
           selection: [],
+          bcDraft: [],
           camera: null,
           section: { ...state.viewer.section, offset: null },
         },
@@ -252,6 +255,16 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       return sameTargets(state.viewer.selection, action.selection)
         ? state
         : { ...state, viewer: { ...state.viewer, selection: action.selection } };
+
+    case 'view/setBcDraft':
+      return sameTargets(state.viewer.bcDraft, action.targets)
+        ? state
+        : { ...state, viewer: { ...state.viewer, bcDraft: action.targets } };
+
+    case 'view/setBcCollecting':
+      return state.viewer.bcCollecting === action.collecting
+        ? state
+        : { ...state, viewer: { ...state.viewer, bcCollecting: action.collecting } };
 
     case 'view/patchSection': {
       const section = { ...state.viewer.section, ...action.patch };

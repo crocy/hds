@@ -393,12 +393,46 @@ export function resolveTargetTriangles(model: ThermalModel, target: Target): Uin
   return Uint32Array.from(tris);
 }
 
+/**
+ * The nodes a whole boundary condition covers: its members in order, each member's
+ * own order kept, and every node once. A group holding a part and one of that part's
+ * faces therefore names each node once, so an area-weighted load cannot double-inject.
+ */
+export function unionTargetNodes(model: ThermalModel, targets: readonly Target[]): Uint32Array {
+  return unionOf(model.nodeCount, targets, (target) => resolveTargetNodes(model, target));
+}
+
+/** The same union over triangles, for the area-based conditions. */
+export function unionTargetTriangles(model: ThermalModel, targets: readonly Target[]): Uint32Array {
+  return unionOf(model.triCount, targets, (target) => resolveTargetTriangles(model, target));
+}
+
+function unionOf(
+  indexCount: number,
+  targets: readonly Target[],
+  resolve: (target: Target) => Uint32Array,
+): Uint32Array {
+  // Both resolvers already deduplicate and bound their own output, so a lone member
+  // needs no second pass.
+  if (targets.length === 1) return resolve(targets[0]);
+  const seen = new Uint8Array(indexCount);
+  const out: number[] = [];
+  for (const target of targets) {
+    for (const index of resolve(target)) {
+      if (seen[index]) continue;
+      seen[index] = 1;
+      out.push(index);
+    }
+  }
+  return Uint32Array.from(out);
+}
+
 /** Per-triangle user-supplied film coefficient; NaN means "use the correlation". */
 export function convectionOverrides(model: ThermalModel, scenario: Scenario): Float32Array {
   const overrides = new Float32Array(model.triCount).fill(Number.NaN);
   for (const bc of scenario.boundaryConditions) {
     if (bc.kind !== 'convection' || !bc.enabled || bc.h === 'auto') continue;
-    for (const t of resolveTargetTriangles(model, bc.target)) overrides[t] = bc.h;
+    for (const t of unionTargetTriangles(model, bc.targets)) overrides[t] = bc.h;
   }
   return overrides;
 }
@@ -749,7 +783,8 @@ export function assembleSystem(
 
   for (const bc of scenario.boundaryConditions) {
     if (!bc.enabled || bc.kind !== 'heatLoad') continue;
-    const nodes = resolveTargetNodes(model, bc.target);
+    // The union, so `watts` is the total over the group however its members overlap.
+    const nodes = unionTargetNodes(model, bc.targets);
     let totalArea = 0;
     let count = 0;
     for (const node of nodes) {
@@ -772,7 +807,7 @@ export function assembleSystem(
 
   for (const bc of scenario.boundaryConditions) {
     if (!bc.enabled || bc.kind !== 'fixedTemp') continue;
-    const nodes = resolveTargetNodes(model, bc.target);
+    const nodes = unionTargetNodes(model, bc.targets);
     let applied = 0;
     for (const node of nodes) {
       const dof = nodeDof[node];

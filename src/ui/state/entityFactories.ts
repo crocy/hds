@@ -6,6 +6,7 @@
  */
 
 import type { BoundaryCondition, Material, SurfaceFinish, Target } from '@/core/types';
+import { dedupeTargets } from '@/core/targets';
 
 let sequence = 0;
 
@@ -16,19 +17,43 @@ export function nextEntityId(prefix: string): string {
   return `${prefix}-${sequence.toString(36)}${salt}`;
 }
 
-export function createFixedTempCondition(target: Target, kelvin: number): BoundaryCondition {
-  return { id: nextEntityId('bc-fixed'), kind: 'fixedTemp', target, value: kelvin, enabled: true };
+export function createFixedTempCondition(
+  targets: readonly Target[],
+  kelvin: number,
+): BoundaryCondition {
+  return {
+    id: nextEntityId('bc-fixed'),
+    kind: 'fixedTemp',
+    targets: dedupeTargets(targets),
+    value: kelvin,
+    enabled: true,
+  };
 }
 
-export function createHeatLoadCondition(target: Target, watts: number): BoundaryCondition {
-  return { id: nextEntityId('bc-load'), kind: 'heatLoad', target, watts, enabled: true };
+export function createHeatLoadCondition(
+  targets: readonly Target[],
+  watts: number,
+): BoundaryCondition {
+  return {
+    id: nextEntityId('bc-load'),
+    kind: 'heatLoad',
+    targets: dedupeTargets(targets),
+    watts,
+    enabled: true,
+  };
 }
 
 export function createConvectionCondition(
-  target: Target,
+  targets: readonly Target[],
   h: number | 'auto' = 'auto',
 ): BoundaryCondition {
-  return { id: nextEntityId('bc-conv'), kind: 'convection', target, h, enabled: true };
+  return {
+    id: nextEntityId('bc-conv'),
+    kind: 'convection',
+    targets: dedupeTargets(targets),
+    h,
+    enabled: true,
+  };
 }
 
 export function createCustomMaterial(name: string, k: number): Material {

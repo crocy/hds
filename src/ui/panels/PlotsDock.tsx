@@ -13,7 +13,7 @@ import { areaAboveThreshold } from '@/analysis/threshold';
 import type { Scenario, SectionField2D, SolveResult, ThermalModel } from '@/core/types';
 import type { SectionPolylineDetail } from '@/geometry/section';
 import { celsiusToKelvin } from '@/core/units';
-import { resolveTargetNodes } from '@/physics/assemble';
+import { unionTargetNodes } from '@/physics/assemble';
 import {
   HeatBalanceView,
   PathLengthPlot,
@@ -73,7 +73,7 @@ export function PlotsDock({ model, scenario, result, section, scale, onClose }: 
     const sources = new Set<number>();
     for (const condition of scenario.boundaryConditions) {
       if (condition.kind !== 'fixedTemp' || !condition.enabled) continue;
-      for (const node of resolveTargetNodes(model, condition.target)) sources.add(node);
+      for (const node of unionTargetNodes(model, condition.targets)) sources.add(node);
     }
     if (sources.size === 0) return null;
     return analysePathLength(model, sources, result.temperature, {

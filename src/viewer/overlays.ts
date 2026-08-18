@@ -110,12 +110,14 @@ export function boundaryConditionGeometry(
   const out: TargetGeometry = { triangles: [], paths: [], nodes: [] };
   for (const condition of conditions) {
     if (condition.kind !== kind || !condition.enabled) continue;
-    const resolved = resolveTarget(model, condition.target);
-    // One marker per target: a patch for part and face targets, a polyline for an
-    // edge, a point for a node. Drawing a part's nodes as well would just fog it.
-    if (condition.target.type === 'edge') out.paths.push(resolved.nodes);
-    else if (condition.target.type === 'node') out.nodes.push(...resolved.nodes);
-    else for (const tri of resolved.triangles) out.triangles.push(tri);
+    for (const target of condition.targets) {
+      const resolved = resolveTarget(model, target);
+      // One marker per member: a patch for part and face targets, a polyline for an
+      // edge, a point for a node. Drawing a part's nodes as well would just fog it.
+      if (target.type === 'edge') out.paths.push(resolved.nodes);
+      else if (target.type === 'node') out.nodes.push(...resolved.nodes);
+      else for (const tri of resolved.triangles) out.triangles.push(tri);
+    }
   }
   return out;
 }

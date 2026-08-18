@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createDefaultScenario } from '@/core/defaults';
-import { PERFECT_CONTACT, type BoundaryCondition, type Cavity, type Contact } from '@/core/types';
+import {
+  PERFECT_CONTACT,
+  type BoundaryCondition,
+  type Cavity,
+  type Contact,
+  type Target,
+} from '@/core/types';
 import { celsiusToKelvin } from '@/core/units';
 import { patchBoundaryCondition, scenarioReducer } from './scenarioReducer';
 
@@ -11,7 +17,7 @@ function scenarioWith(overrides: Partial<ReturnType<typeof createDefaultScenario
 const fixedTemp: BoundaryCondition = {
   id: 'bc-1',
   kind: 'fixedTemp',
-  target: { type: 'part', partId: 'housing-0' },
+  targets: [{ type: 'part', partId: 'housing-0' }],
   value: celsiusToKelvin(200),
   enabled: true,
 };
@@ -149,6 +155,62 @@ describe('scenarioReducer', () => {
   });
 });
 
+describe('bc/add', () => {
+  it('deduplicates the member set of the condition it is handed', () => {
+    const face: Target = { type: 'face', partId: 'housing-0', faceId: 3 };
+    const after = scenarioReducer(scenarioWith(), {
+      type: 'bc/add',
+      condition: { ...fixedTemp, targets: [face, { ...face }] },
+    });
+
+    expect(after.boundaryConditions[0].targets).toEqual([face]);
+  });
+
+  it('ignores a condition that names nothing', () => {
+    const before = scenarioWith();
+    expect(
+      scenarioReducer(before, { type: 'bc/add', condition: { ...fixedTemp, targets: [] } }),
+    ).toBe(before);
+  });
+});
+
+describe('bc/setTargets', () => {
+  const faceA: Target = { type: 'face', partId: 'housing-0', faceId: 3 };
+  const faceB: Target = { type: 'face', partId: 'housing-0', faceId: 7 };
+
+  it('deduplicates the incoming set, keeping the order it was picked in', () => {
+    const before = scenarioWith({ boundaryConditions: [fixedTemp] });
+    const after = scenarioReducer(before, {
+      type: 'bc/setTargets',
+      id: 'bc-1',
+      targets: [faceB, faceA, { ...faceB }],
+    });
+
+    expect(after.boundaryConditions[0].targets).toEqual([faceB, faceA]);
+  });
+
+  it('refuses an empty set rather than writing a condition that names nothing', () => {
+    const before = scenarioWith({ boundaryConditions: [fixedTemp] });
+    expect(scenarioReducer(before, { type: 'bc/setTargets', id: 'bc-1', targets: [] })).toBe(
+      before,
+    );
+  });
+
+  it('returns the same state when the set is unchanged, and for an unknown id', () => {
+    const before = scenarioWith({ boundaryConditions: [fixedTemp] });
+    expect(
+      scenarioReducer(before, {
+        type: 'bc/setTargets',
+        id: 'bc-1',
+        targets: [{ type: 'part', partId: 'housing-0' }],
+      }),
+    ).toBe(before);
+    expect(
+      scenarioReducer(before, { type: 'bc/setTargets', id: 'missing', targets: [faceA] }),
+    ).toBe(before);
+  });
+});
+
 describe('patchBoundaryCondition', () => {
   it('applies only the field belonging to the condition kind', () => {
     const patched = patchBoundaryCondition(fixedTemp, { value: 300, watts: 12 });
@@ -164,7 +226,7 @@ describe('patchBoundaryCondition', () => {
     const auto: BoundaryCondition = {
       id: 'bc-2',
       kind: 'convection',
-      target: { type: 'face', partId: 'a-0', faceId: 3 },
+      targets: [{ type: 'face', partId: 'a-0', faceId: 3 }],
       h: 'auto',
       enabled: true,
     };

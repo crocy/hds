@@ -49,15 +49,21 @@ function scenarioWith(overrides: Partial<Scenario> = {}): Scenario {
 }
 
 function fixedTemp(id: string, partId: string, nodeId: number, value: number): BoundaryCondition {
-  return { id, kind: 'fixedTemp', target: { type: 'node', partId, nodeId }, value, enabled: true };
+  return {
+    id,
+    kind: 'fixedTemp',
+    targets: [{ type: 'node', partId, nodeId }],
+    value,
+    enabled: true,
+  };
 }
 
 function fixedPartTemp(id: string, partId: string, value: number): BoundaryCondition {
-  return { id, kind: 'fixedTemp', target: { type: 'part', partId }, value, enabled: true };
+  return { id, kind: 'fixedTemp', targets: [{ type: 'part', partId }], value, enabled: true };
 }
 
 function fixedFilm(id: string, partId: string, h: number): BoundaryCondition {
-  return { id, kind: 'convection', target: { type: 'part', partId }, h, enabled: true };
+  return { id, kind: 'convection', targets: [{ type: 'part', partId }], h, enabled: true };
 }
 
 /** The whole left-hand column of a strip mesh, both rows. */
@@ -215,14 +221,14 @@ describe('sheet solid benchmark', () => {
         {
           id: 'cavity-face',
           kind: 'convection',
-          target: { type: 'face', partId: 'part-0', faceId: 0 },
+          targets: [{ type: 'face', partId: 'part-0', faceId: 0 }],
           h: hCavity,
           enabled: true,
         },
         {
           id: 'open-face',
           kind: 'convection',
-          target: { type: 'face', partId: 'part-0', faceId: 1 },
+          targets: [{ type: 'face', partId: 'part-0', faceId: 1 }],
           h: hOpen,
           enabled: true,
         },
@@ -567,7 +573,7 @@ describe('body types', () => {
     const load: BoundaryCondition = {
       id: 'watts',
       kind: 'heatLoad',
-      target: { type: 'node', partId: 'part-0', nodeId: 0 },
+      targets: [{ type: 'node', partId: 'part-0', nodeId: 0 }],
       watts: 2,
       enabled: true,
     };
