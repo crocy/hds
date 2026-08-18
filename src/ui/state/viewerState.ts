@@ -34,6 +34,12 @@ export interface ViewerState {
   /** Whether viewer clicks add to `bcDraft` instead of moving the selection. */
   bcCollecting: boolean;
   section: SectionState;
+  /**
+   * Cavity whose walls the overlay shows alone, or null for all of them. A pocket is
+   * the one entity with no shape of its own in the tree — it is defined by the faces
+   * that wall it — so picking it out of the list has to be answerable in the viewport.
+   */
+  focusedCavity: number | null;
 }
 
 export const DEFAULT_SECTION_STATE: SectionState = {
@@ -61,4 +67,5 @@ export const DEFAULT_VIEWER_STATE: ViewerState = {
   bcDraft: [],
   bcCollecting: false,
   section: DEFAULT_SECTION_STATE,
+  focusedCavity: null,
 };

@@ -57,13 +57,14 @@ export function CavitiesPanel() {
         <button
           type="button"
           className={viewer.overlays.cavities ? 'on' : undefined}
-          onClick={() =>
+          onClick={() => {
+            dispatch({ type: 'view/focusCavity', cavityId: null });
             dispatch({
               type: 'view/setOverlay',
               kind: 'cavities',
               visible: !viewer.overlays.cavities,
-            })
-          }
+            });
+          }}
         >
           overlay
         </button>
@@ -76,9 +77,28 @@ export function CavitiesPanel() {
           {cavities.map((cavity) => {
             const air = airStates.get(cavity.id) ?? UNSOLVED_AIR;
             const notPhysical = air.kind === 'solved' && air.severity === 'bad';
+            const focused = viewer.focusedCavity === cavity.id;
             return (
-              <li key={cavity.id} className={notPhysical ? 'entity broken' : 'entity'}>
-                <div className="entity-head">
+              <li
+                key={cavity.id}
+                className={
+                  `${notPhysical ? 'entity broken' : 'entity'}${focused ? ' selected' : ''}`
+                }
+              >
+                <div
+                  className="entity-head clickable"
+                  role="button"
+                  tabIndex={0}
+                  title="Show only this pocket's walls in the viewport"
+                  onClick={() =>
+                    dispatch({ type: 'view/focusCavity', cavityId: focused ? null : cavity.id })
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    dispatch({ type: 'view/focusCavity', cavityId: focused ? null : cavity.id });
+                  }}
+                >
                   <span className="entity-name">{cavity.name}</span>
                   <span className="muted">{cavity.triCount} tris</span>
                 </div>
@@ -139,7 +159,10 @@ export function CavitiesPanel() {
           selected face is open air
         </button>
       ) : (
-        <Hint>Select a face (mode 2) to reassign it between cavities and open air.</Hint>
+        <Hint>
+          Click a cavity to show only its walls. Select a face (mode 2) to reassign it between
+          cavities and open air.
+        </Hint>
       )}
     </Panel>
   );

@@ -534,8 +534,17 @@ function normaliseViewerState(
     selection: model
       ? (source.selection ?? []).filter((target) => partIds.has(target.partId))
       : (source.selection ?? []),
+    // A focus on a pocket this model no longer has would show an empty overlay and
+    // read as "this cavity has no walls" rather than as a stale view setting.
+    focusedCavity: cavityExists(model, source.focusedCavity) ? source.focusedCavity : null,
     camera: source.camera ?? null,
   };
+}
+
+function cavityExists(model: ThermalModel | null, cavityId: number | null | undefined): boolean {
+  if (!model || cavityId == null) return false;
+  for (let t = 0; t < model.triCount; t++) if (model.triCavity[t] === cavityId) return true;
+  return false;
 }
 
 /** Formats the mismatch between a project's CAD reference and the file actually loaded. */

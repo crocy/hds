@@ -574,6 +574,11 @@ export class ThermalScene {
     this.invalidate();
   }
 
+  setFocusedCavity(cavityId: number | null): void {
+    this.overlays.setFocusedCavity(cavityId);
+    this.invalidate();
+  }
+
   isOverlayVisible(kind: OverlayKind): boolean {
     return this.overlays.isVisible(kind);
   }

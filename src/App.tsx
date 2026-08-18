@@ -224,6 +224,10 @@ function Workspace() {
     for (const kind of OVERLAY_KINDS) scene.setOverlayVisible(kind, viewer.overlays[kind]);
   }, [scene, viewer.overlays]);
 
+  useEffect(() => {
+    scene?.setFocusedCavity(viewer.focusedCavity);
+  }, [scene, viewer.focusedCavity]);
+
   // -- theme ----------------------------------------------------------------
   // Not repeated in `applyViewerState`: the scene holds both colours itself, and the
   // mesh `setModel` rebuilds is painted from the one it is already holding.

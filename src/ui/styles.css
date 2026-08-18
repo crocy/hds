@@ -521,6 +521,25 @@ input[type='checkbox'] {
   gap: 6px;
 }
 
+.entity-head.clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  margin: -2px -3px;
+  padding: 2px 3px;
+}
+
+.entity-head.clickable:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.entity.selected {
+  border-color: rgba(164, 107, 255, 0.75);
+}
+
+.entity.selected > .entity-head {
+  background: rgba(164, 107, 255, 0.22);
+}
+
 .entity-name {
   flex: 1;
   background: none;

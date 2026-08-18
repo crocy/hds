@@ -83,6 +83,7 @@ export type ProjectAction =
   | { type: 'solve/failed'; message: string }
   | { type: 'view/setWireframe'; wireframe: boolean }
   | { type: 'view/setOverlay'; kind: OverlayKind; visible: boolean }
+  | { type: 'view/focusCavity'; cavityId: number | null }
   | { type: 'view/setSelectionMode'; mode: SelectionMode }
   | { type: 'view/setSelection'; selection: Target[] }
   | { type: 'view/setBcDraft'; targets: Target[] }
@@ -243,6 +244,18 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         viewer: {
           ...state.viewer,
           overlays: { ...state.viewer.overlays, [action.kind]: action.visible },
+        },
+      };
+
+    // Focusing a pocket switches its overlay on: the click has to show something, and
+    // the layer it narrows is the only place a cavity is visible at all.
+    case 'view/focusCavity':
+      return {
+        ...state,
+        viewer: {
+          ...state.viewer,
+          focusedCavity: action.cavityId,
+          overlays: { ...state.viewer.overlays, cavities: action.cavityId !== null },
         },
       };
 

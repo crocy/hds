@@ -353,6 +353,7 @@ export class Overlays {
   private clippingPlanes: THREE.Plane[] | null = null;
   private lastContacts: readonly Contact[] | null = null;
   private lastConditions: readonly BoundaryCondition[] | null = null;
+  private focusedCavity: number | null = null;
 
   constructor() {
     this.object.name = 'overlays';
@@ -378,6 +379,14 @@ export class Overlays {
       layer.setPositionSource(positions);
       this.stale.add(kind);
     }
+    this.rebuildVisible();
+  }
+
+  /** Narrows the cavity layer to one pocket, or back to all of them with null. */
+  setFocusedCavity(cavityId: number | null): void {
+    if (this.focusedCavity === cavityId) return;
+    this.focusedCavity = cavityId;
+    this.stale.add('cavities');
     this.rebuildVisible();
   }
 
@@ -472,7 +481,7 @@ export class Overlays {
         break;
       }
       case 'cavities': {
-        layer.setTriangles(model, cavityFaceTriangles(model));
+        layer.setTriangles(model, cavityFaceTriangles(model, this.focusedCavity ?? undefined));
         break;
       }
       case 'featureEdges': {
